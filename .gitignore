@@ -1,0 +1,8 @@
+rice
+rice.exe
+.zig-cache/
+zig-out/
+dist/
+dist-*/
+root
+root.o

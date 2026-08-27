@@ -1,0 +1,46 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.14.0
+
+      - name: Install UPX
+        run: sudo apt-get update && sudo apt-get install -y upx
+
+      - name: Build
+        run: |
+          mkdir -p dist
+          TAG_NAME="${GITHUB_REF#refs/tags/}"
+          zig build -Doptimize=ReleaseSmall -Dtarget=x86_64-linux -Dversion="${TAG_NAME}" --prefix dist-linux
+          cp dist-linux/bin/rice dist/rice-x86_64-linux
+
+      - name: Compress
+        run: |
+          cp dist/rice-x86_64-linux dist/rice-x86_64-linux-upx
+          upx --best --lzma dist/rice-x86_64-linux-upx
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/rice-x86_64-linux
+            dist/rice-x86_64-linux-upx
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

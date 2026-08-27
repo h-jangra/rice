@@ -1,0 +1,121 @@
+const std = @import("std");
+const config = @import("../core/config.zig");
+const paths = @import("../core/paths.zig");
+const fs = @import("../core/fs.zig");
+const bin = @import("../core/bin.zig");
+
+test "config: normalization and ini parsing" {
+    const allocator = std.testing.allocator;
+
+    const norm = try config.normalizeConfigFileEntry(allocator, "  ~/.config/nvim/init.lua  ");
+    defer allocator.free(norm);
+    try std.testing.expectEqualStrings("~/.config/nvim/init.lua", norm);
+
+    const norm2 = try config.normalizeConfigFileEntry(allocator, ".zshrc");
+    defer allocator.free(norm2);
+    try std.testing.expectEqualStrings("~/.zshrc", norm2);
+
+    var cfg = config.Config.init(allocator);
+    defer cfg.deinit();
+
+    _ = try cfg.addFile("~/.zshrc");
+    _ = try cfg.addFile("~/.config/nvim");
+    try std.testing.expect(cfg.hasFile("~/.zshrc"));
+    try std.testing.expect(cfg.hasFile(".zshrc"));
+    try std.testing.expect(!cfg.hasFile("~/.gitconfig"));
+
+    _ = try cfg.addBinary("bat", "sharkdp/bat");
+    try std.testing.expectEqualStrings("sharkdp/bat", cfg.binaries.get("bat").?);
+}
+
+test "paths: sensitive file detection" {
+    try std.testing.expect(paths.detectSensitiveFile("~/.ssh/id_rsa") != null);
+    try std.testing.expect(paths.detectSensitiveFile("~/.ssh/id_rsa.pub") == null);
+    try std.testing.expect(paths.detectSensitiveFile(".env") != null);
+    try std.testing.expect(paths.detectSensitiveFile(".env.example") == null);
+    try std.testing.expect(paths.detectSensitiveFile("cert.pem") != null);
+    try std.testing.expect(paths.detectSensitiveFile("~/.aws/credentials") != null);
+    try std.testing.expect(paths.detectSensitiveFile("~/.docker/config.json") != null);
+}
+
+test "paths: github url parsing" {
+    const allocator = std.testing.allocator;
+    const gh_info = try paths.parseGitHubURL(allocator, "https://github.com/h-jangra/rice/blob/main/README.md");
+    defer {
+        gh_info.deinit(allocator);
+        allocator.destroy(gh_info);
+    }
+    try std.testing.expectEqualStrings("https://github.com/h-jangra/rice.git", gh_info.repo_url);
+    try std.testing.expectEqualStrings("main", gh_info.branch);
+    try std.testing.expectEqualStrings("README.md", gh_info.path);
+    try std.testing.expect(gh_info.isFile());
+}
+
+test "paths: repo url normalization" {
+    const allocator = std.testing.allocator;
+
+    const n1 = try paths.normalizeRepoURL(allocator, "user/dotfiles");
+    defer allocator.free(n1);
+    try std.testing.expectEqualStrings("https://github.com/user/dotfiles.git", n1);
+
+    const n2 = try paths.normalizeRepoURL(allocator, "git@github.com:user/dotfiles.git");
+    defer allocator.free(n2);
+    try std.testing.expectEqualStrings("git@github.com:user/dotfiles.git", n2);
+}
+
+test "bin: asset matching" {
+    try std.testing.expect(bin.matchAsset("bat-v0.24.0-x86_64-unknown-linux-gnu.tar.gz", "linux", "amd64"));
+    try std.testing.expect(!bin.matchAsset("bat-v0.24.0-aarch64-unknown-linux-gnu.tar.gz", "linux", "amd64"));
+    try std.testing.expect(bin.matchAsset("bat-v0.24.0-aarch64-unknown-linux-gnu.tar.gz", "linux", "arm64"));
+    try std.testing.expect(!bin.matchAsset("bat-v0.24.0-x86_64-apple-darwin.tar.gz", "linux", "amd64"));
+    try std.testing.expect(bin.matchAsset("bat-v0.24.0-x86_64-apple-darwin.tar.gz", "darwin", "amd64"));
+}
+
+test "fs: html detection and archive check" {
+    try std.testing.expect(fs.isHTMLContent("<!DOCTYPE html><html><head></head><body>hello</body></html>"));
+    try std.testing.expect(!fs.isHTMLContent("#!/bin/bash\necho hello"));
+    try std.testing.expect(fs.isArchive("release.tar.gz"));
+    try std.testing.expect(fs.isArchive("release.zip"));
+    try std.testing.expect(!fs.isArchive("binary"));
+}
+
+test "bin: executable binary detection and candidate filtering" {
+    // ELF executable header
+    try std.testing.expect(bin.isExecutableBinary("\x7fELF\x02\x01\x01\x00"));
+    // Mach-O header
+    try std.testing.expect(bin.isExecutableBinary(&[_]u8{ 0xcf, 0xfa, 0xed, 0xfe }));
+    // Windows MZ header
+    try std.testing.expect(bin.isExecutableBinary("MZ\x90\x00\x03\x00"));
+    // Script shebang
+    try std.testing.expect(bin.isExecutableBinary("#!/bin/sh\necho hi\n"));
+    try std.testing.expect(bin.isExecutableBinary("#!/usr/bin/env python3\n"));
+    // Plain source code or text
+    try std.testing.expect(!bin.isExecutableBinary("int main() { return 0; }"));
+    try std.testing.expect(!bin.isExecutableBinary("fn main() void {}"));
+
+    // Ignored candidate files (source code, docs, licenses)
+    try std.testing.expect(bin.isIgnoredCandidate("main.c", false, "main.c"));
+    try std.testing.expect(bin.isIgnoredCandidate("main.zig", false, "main.zig"));
+    try std.testing.expect(bin.isIgnoredCandidate("main.rs", false, "main.rs"));
+    try std.testing.expect(bin.isIgnoredCandidate("LICENSE", false, "LICENSE"));
+    try std.testing.expect(bin.isIgnoredCandidate("README.md", false, "README.md"));
+    try std.testing.expect(bin.isIgnoredCandidate("doc/file", false, "file"));
+    try std.testing.expect(!bin.isIgnoredCandidate("bat", false, "bat"));
+    try std.testing.expect(!bin.isIgnoredCandidate("bin/fzf", false, "fzf"));
+}
+
+test "bin: parse binary source" {
+    const allocator = std.testing.allocator;
+
+    var gh_src = try bin.parseBinarySource(allocator, "sharkdp/bat", "/home/test");
+    defer gh_src.deinit(allocator);
+    try std.testing.expectEqual(bin.BinarySourceType.github, gh_src.source_type);
+    try std.testing.expectEqualStrings("sharkdp", gh_src.owner);
+    try std.testing.expectEqualStrings("bat", gh_src.repo);
+
+    var url_src = try bin.parseBinarySource(allocator, "https://github.com/sharkdp/bat/releases/download/v0.24.0/bat.tar.gz", "/home/test");
+    defer url_src.deinit(allocator);
+    try std.testing.expectEqual(bin.BinarySourceType.url, url_src.source_type);
+
+    try std.testing.expectError(error.InvalidSource, bin.parseBinarySource(allocator, "nonexistent-binary-name-xyz", "/home/test"));
+}

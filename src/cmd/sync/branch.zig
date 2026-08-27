@@ -1,0 +1,106 @@
+const std = @import("std");
+const Allocator = std.mem.Allocator;
+const git_mod = @import("../../core/git/mod.zig");
+const paths = @import("../../core/paths/mod.zig");
+
+pub fn switchCmd(allocator: Allocator, git: *git_mod.Git, homeDir: []const u8, args: []const []const u8) !void {
+    if (!git.isBareRepo()) {
+        std.debug.print("Error: bare repository {s} not found or invalid.\n", .{git.rice_dir});
+        return error.BareRepoInvalid;
+    }
+
+    if (args.len == 0) {
+        std.debug.print("Error: branch name required.\nUsage: rice switch [-c|--create] [-f|--force] [-m|--merge] <branch>\n", .{});
+        return error.BranchNameRequired;
+    }
+
+    var create_new = false;
+    var force = false;
+    var merge = false;
+    var branch_name: ?[]const u8 = null;
+
+    var i: usize = 0;
+    while (i < args.len) : (i += 1) {
+        const arg = std.mem.trim(u8, args[i], " \t\r\n");
+        if (std.mem.eql(u8, arg, "-c") or std.mem.eql(u8, arg, "--create") or std.mem.eql(u8, arg, "-b")) {
+            create_new = true;
+            if (i + 1 < args.len and !std.mem.startsWith(u8, args[i + 1], "-")) {
+                branch_name = std.mem.trim(u8, args[i + 1], " \t\r\n");
+                i += 1;
+            }
+        } else if (std.mem.startsWith(u8, arg, "-c=")) {
+            branch_name = std.mem.trim(u8, arg["-c=".len..], " \t\r\n");
+            create_new = true;
+        } else if (std.mem.startsWith(u8, arg, "--create=")) {
+            branch_name = std.mem.trim(u8, arg["--create=".len..], " \t\r\n");
+            create_new = true;
+        } else if (std.mem.startsWith(u8, arg, "-b=")) {
+            branch_name = std.mem.trim(u8, arg["-b=".len..], " \t\r\n");
+            create_new = true;
+        } else if (std.mem.eql(u8, arg, "-f") or std.mem.eql(u8, arg, "--force")) {
+            force = true;
+        } else if (std.mem.eql(u8, arg, "-m") or std.mem.eql(u8, arg, "--merge")) {
+            merge = true;
+        } else if (!std.mem.startsWith(u8, arg, "-") and branch_name == null) {
+            branch_name = arg;
+        }
+    }
+
+    if (branch_name == null or branch_name.?.len == 0) {
+        std.debug.print("Error: branch name required.\nUsage: rice switch [-c|--create] [-f|--force] [-m|--merge] <branch>\n", .{});
+        return error.BranchNameRequired;
+    }
+
+    const cur_branch = git.getCurrentBranch() catch "";
+    defer allocator.free(cur_branch);
+
+    if (!create_new and std.mem.eql(u8, cur_branch, branch_name.?) and !force and !merge) {
+        std.debug.print("Already on branch '{s}'\n", .{branch_name.?});
+        return;
+    }
+
+    try git.switchBranch(branch_name.?, create_new, force, merge);
+
+    if (create_new) {
+        std.debug.print("Switched to a new branch '{s}'\n", .{branch_name.?});
+    } else {
+        std.debug.print("Switched to branch '{s}'\n", .{branch_name.?});
+    }
+
+    const ini_path = try paths.getRiceIniPath(allocator, homeDir);
+    defer allocator.free(ini_path);
+
+    if (git.getHEADFileContent(".rice.ini")) |ini_bytes| {
+        defer allocator.free(ini_bytes);
+        if (ini_bytes.len > 0) {
+            const file = std.fs.createFileAbsolute(ini_path, .{ .mode = 0o644 }) catch null;
+            if (file) |f| {
+                f.writeAll(ini_bytes) catch {};
+                f.close();
+            }
+        }
+    } else |_| {}
+}
+
+pub fn branchesCmd(allocator: Allocator, git: *git_mod.Git, args: []const []const u8) !void {
+    if (!git.isBareRepo()) {
+        std.debug.print("Error: bare repository {s} not found or invalid.\n", .{git.rice_dir});
+        return error.BareRepoInvalid;
+    }
+
+    const out = try git.branchList(args);
+    defer allocator.free(out);
+
+    if (out.len == 0) {
+        std.debug.print("No branches found.\n", .{});
+        return;
+    }
+
+    var lines = std.mem.splitScalar(u8, out, '\n');
+    while (lines.next()) |line| {
+        const clean = std.mem.trimRight(u8, line, "\r");
+        if (std.mem.trim(u8, clean, " \t").len > 0) {
+            std.debug.print("{s}\n", .{clean});
+        }
+    }
+}

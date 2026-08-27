@@ -2,26 +2,18 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 
 pub fn downloadWithCurl(allocator: Allocator, url: []const u8, destPath: []const u8) !void {
-    const argv = [_][]const u8{ "curl", "-fsSL", "--proto", "=https,http", url, "-o", destPath };
+    const argv = [_][]const u8{ "curl", "-#", "-fSL", "--proto", "=https,http", url, "-o", destPath };
     var child = std.process.Child.init(&argv, allocator);
     child.stdin_behavior = .Ignore;
-    child.stdout_behavior = .Pipe;
-    child.stderr_behavior = .Pipe;
+    child.stdout_behavior = .Ignore;
+    child.stderr_behavior = .Inherit;
 
     try child.spawn();
-
-    const stdout = try child.stdout.?.readToEndAlloc(allocator, 1024 * 1024);
-    defer allocator.free(stdout);
-    const stderr = try child.stderr.?.readToEndAlloc(allocator, 1024 * 1024);
-    defer allocator.free(stderr);
 
     const term = try child.wait();
     switch (term) {
         .Exited => |code| {
             if (code != 0) {
-                var err_msg = std.mem.trim(u8, stderr, " \t\r\n");
-                if (err_msg.len == 0) err_msg = std.mem.trim(u8, stdout, " \t\r\n");
-                std.debug.print("failed to download from {s}: {s}\n", .{ url, err_msg });
                 return error.CurlDownloadFailed;
             }
         },

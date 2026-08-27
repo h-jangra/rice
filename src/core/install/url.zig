@@ -48,7 +48,11 @@ pub fn runDirectURLInstall(allocator: Allocator, homeDir: []const u8, rawURL: []
             try allocator.dupe(u8, base);
 
         dl_path = try std.fs.path.join(allocator, &[_][]const u8{ tmp_dir_path, asset_name });
-        try fs.downloadWithCurl(allocator, parsed_url, dl_path);
+        std.debug.print("Downloading...\n", .{});
+        fs.downloadWithCurl(allocator, parsed_url, dl_path) catch |err| {
+            std.debug.print("Error: failed to download from {s}\n", .{parsed_url});
+            return err;
+        };
     } else {
         var resolved_dl = rawURL;
         var allocated_dl: ?[]u8 = null;

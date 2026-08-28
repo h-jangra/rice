@@ -88,11 +88,17 @@ const command_help_map = std.StaticStringMap([]const u8).initComptime(.{
     },
     .{
         "push",
-        \\Usage: rice push
+        \\Usage: rice push [-m|--message] [message]
         \\Aliases: rice p
         \\
         \\Push committed changes to origin remote repository, automatically committing
-        \\uncommitted tracked changes if needed and printing the pushed commit message.
+        \\uncommitted tracked changes (with an optional custom message) if needed and
+        \\printing the pushed commit message.
+        \\
+        \\Examples:
+        \\  rice push
+        \\  rice push -m "feat: update dotfiles"
+        \\  rice p -m "sync dots"
     },
     .{
         "pull",
@@ -254,7 +260,7 @@ pub fn printCompactUsage() void {
         \\
         \\Branch & Sync:
         \\  commit, c [msg]      Commit changes (supports -m)
-        \\  push, p              Push to origin
+        \\  push, p [msg]        Push to origin (supports -m)
         \\  pull, pl             Pull changes safely
         \\  switch, sw <branch>  Switch or create branch (-c)
         \\  branches, br         List repository branches
@@ -290,7 +296,7 @@ pub fn printDetailedHelp() void {
         \\
         \\Branch & Sync Commands:
         \\  commit, c [message]    Stage .rice.ini and all managed paths, then commit (supports -m)
-        \\  push, p                Push committed changes to origin remote
+        \\  push, p [message]      Push to origin remote, committing uncommitted changes (supports -m)
         \\  pull, pl               Safely pull changes from origin (aborts on conflict)
         \\  switch, sw <branch>    Switch to an existing branch or create a new one (-c)
         \\  branches, br           List all local and remote branches
@@ -444,7 +450,7 @@ pub fn main() !void {
     } else if (std.mem.eql(u8, resolved_cmd, "commit")) {
         cmd_sync.commitCmd(allocator, git, home_dir, cmd_args) catch std.process.exit(1);
     } else if (std.mem.eql(u8, resolved_cmd, "push")) {
-        cmd_sync.pushCmd(allocator, git, home_dir) catch std.process.exit(1);
+        cmd_sync.pushCmd(allocator, git, home_dir, cmd_args) catch std.process.exit(1);
     } else if (std.mem.eql(u8, resolved_cmd, "pull")) {
         cmd_sync.pullCmd(allocator, git, home_dir, cmd_args) catch std.process.exit(1);
     } else if (std.mem.eql(u8, resolved_cmd, "switch")) {

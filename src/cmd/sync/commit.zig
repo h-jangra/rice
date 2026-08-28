@@ -290,7 +290,26 @@ pub fn commitCmd(allocator: Allocator, git: *git_mod.Git, homeDir: []const u8, a
     try git.commit(commit_msg);
 }
 
-pub fn pushCmd(allocator: Allocator, git: *git_mod.Git, homeDir: []const u8) !void {
+fn promptUser(prompt: []const u8) bool {
+    std.debug.print("{s}", .{prompt});
+    const stdin = std.io.getStdIn().reader();
+    var buf: [128]u8 = undefined;
+    if (stdin.readUntilDelimiterOrEof(&buf, '\n')) |line| {
+        if (line) |l| {
+            const trimmed = std.mem.trim(u8, l, " \t\r\n");
+            return std.ascii.eqlIgnoreCase(trimmed, "y") or std.ascii.eqlIgnoreCase(trimmed, "yes");
+        }
+    } else |_| {}
+    return false;
+}
+
+pub fn pushCmd(allocator: Allocator, git: *git_mod.Git, homeDir: []const u8, args: []const []const u8) !void {
+    const msg_opt = parseCommitMessage(allocator, args) catch |err| {
+        std.debug.print("Error: {s}.\nUsage: rice push [-m|--message] [message]\n", .{@errorName(err)});
+        return err;
+    };
+    defer if (msg_opt) |m| allocator.free(m);
+
     if (!git.isBareRepo()) {
         std.debug.print("Error: bare repository {s} not found or invalid.\n", .{git.rice_dir});
         return error.BareRepoInvalid;
@@ -299,22 +318,98 @@ pub fn pushCmd(allocator: Allocator, git: *git_mod.Git, homeDir: []const u8) !vo
     const ini_path = try paths.getRiceIniPath(allocator, homeDir);
     defer allocator.free(ini_path);
 
-    if (config.loadConfig(allocator, ini_path)) |cfg| {
-        defer {
-            cfg.deinit();
-            allocator.destroy(cfg);
+    const cfg = config.loadConfig(allocator, ini_path) catch null;
+    defer {
+        if (cfg) |c| {
+            c.deinit();
+            allocator.destroy(c);
         }
-        _ = stageTrackedFiles(allocator, git, homeDir, cfg) catch {};
-        if (git.output(&[_][]const u8{ "diff", "--cached", "--name-only" })) |diff| {
-            defer allocator.free(diff);
-            if (diff.len > 0) {
-                if (generateAutoCommitMessage(allocator, git, homeDir, cfg)) |auto_msg| {
-                    defer allocator.free(auto_msg);
-                    _ = git.commit(auto_msg) catch {};
-                } else |_| {}
+    }
+
+    if (cfg) |c| {
+        _ = stageTrackedFiles(allocator, git, homeDir, c) catch {};
+    }
+
+    // 1. Check for uncommitted / staged changes
+    const staged_diff = git.output(&[_][]const u8{ "diff", "--cached", "--name-status" }) catch null;
+    defer if (staged_diff) |sd| allocator.free(sd);
+
+    // 2. Check for unpushed commits compared to upstream origin remote
+    var unpushed_commits: ?[]u8 = null;
+    defer if (unpushed_commits) |uc| allocator.free(uc);
+
+    const cur_branch = git.getCurrentBranch() catch null;
+    defer if (cur_branch) |cb| allocator.free(cb);
+
+    if (cur_branch) |cb| {
+        if (cb.len > 0 and !std.mem.eql(u8, cb, "HEAD")) {
+            const upstream_spec = std.fmt.allocPrint(allocator, "origin/{s}..HEAD", .{cb}) catch null;
+            if (upstream_spec) |spec| {
+                defer allocator.free(spec);
+                if (git.output(&[_][]const u8{ "log", "--oneline", spec })) |uc| {
+                    if (uc.len > 0) {
+                        unpushed_commits = uc;
+                    } else {
+                        allocator.free(uc);
+                    }
+                } else |_| {
+                    // Upstream might not exist yet; if has commits, show recent commits
+                    if (git.hasCommits()) {
+                        if (git.output(&[_][]const u8{ "log", "-n", "5", "--oneline" })) |recent| {
+                            if (recent.len > 0) unpushed_commits = recent else allocator.free(recent);
+                        } else |_| {}
+                    }
+                }
             }
+        }
+    }
+
+    const has_staged = staged_diff != null and staged_diff.?.len > 0;
+    const has_unpushed = unpushed_commits != null and unpushed_commits.?.len > 0;
+
+    if (!has_staged and !has_unpushed) {
+        std.debug.print("Everything up-to-date. Nothing to push.\n", .{});
+        return;
+    }
+
+    std.debug.print("Changes to be pushed:\n", .{});
+
+    if (has_staged) {
+        std.debug.print("  Uncommitted changes:\n", .{});
+        var lines = std.mem.splitScalar(u8, staged_diff.?, '\n');
+        while (lines.next()) |line| {
+            const trimmed = std.mem.trim(u8, line, " \t\r");
+            if (trimmed.len == 0) continue;
+            std.debug.print("    {s}\n", .{trimmed});
+        }
+    }
+
+    if (has_unpushed) {
+        std.debug.print("  Unpushed commit(s):\n", .{});
+        var lines = std.mem.splitScalar(u8, unpushed_commits.?, '\n');
+        while (lines.next()) |line| {
+            const trimmed = std.mem.trim(u8, line, " \t\r");
+            if (trimmed.len == 0) continue;
+            std.debug.print("    {s}\n", .{trimmed});
+        }
+    }
+
+    std.debug.print("\n", .{});
+
+    if (!promptUser("Proceed with push? [y/N]: ")) {
+        std.debug.print("Push cancelled.\n", .{});
+        return;
+    }
+
+    // Auto-commit or commit with custom message staged changes if any
+    if (has_staged and cfg != null) {
+        if (msg_opt) |custom_msg| {
+            _ = git.commit(custom_msg) catch {};
+        } else if (generateAutoCommitMessage(allocator, git, homeDir, cfg)) |auto_msg| {
+            defer allocator.free(auto_msg);
+            _ = git.commit(auto_msg) catch {};
         } else |_| {}
-    } else |_| {}
+    }
 
     try git.push();
 
@@ -322,7 +417,7 @@ pub fn pushCmd(allocator: Allocator, git: *git_mod.Git, homeDir: []const u8) !vo
         if (git.output(&[_][]const u8{ "log", "-1", "--format=%s" })) |cmsg| {
             defer allocator.free(cmsg);
             if (cmsg.len > 0) {
-                std.debug.print("{s}\n", .{cmsg});
+                std.debug.print("Pushed: {s}\n", .{cmsg});
             }
         } else |_| {}
     }

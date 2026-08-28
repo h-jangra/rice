@@ -157,7 +157,7 @@ rice restore --bins
 | `status`                 | `st`                   | Show Git status                         |
 | `diff [path]`            | `d`                    | Show changes                            |
 | `commit [-m] <msg>`      | `c`                    | Commit changes                          |
-| `push`                   | `p`                    | Push to origin                          |
+| `push [-m] [msg]`        | `p`                    | Push to origin (supports -m)            |
 | `pull [-f]`              | `pl`                   | Pull changes safely                     |
 | `switch [-c] <branch>`   | `sw`, `checkout`, `co` | Switch or create a branch               |
 | `branches`               | `branch`, `br`         | List branches                           |

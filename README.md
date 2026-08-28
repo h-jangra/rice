@@ -19,10 +19,7 @@ A minimal tool for managing dotfiles, downloading content, and installing binari
 ### Binary
 
 ```bash
-curl -fsSL https://github.com/h-jangra/rice/releases/latest/download/rice-x86_64-linux \
-  -o /tmp/rice &&
-sudo install -Dm755 /tmp/rice /usr/local/bin/rice &&
-rm /tmp/rice
+sudo curl -fsSL https://github.com/h-jangra/rice/releases/latest/download/rice-x86_64-linux /usr/local/bin/rice
 ```
 
 ### From Source

@@ -2,6 +2,7 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const git_mod = @import("../../core/git/mod.zig");
 const paths = @import("../../core/paths/mod.zig");
+const config = @import("../../core/config.zig");
 
 pub fn switchCmd(allocator: Allocator, git: *git_mod.Git, homeDir: []const u8, args: []const []const u8) !void {
     if (!git.isBareRepo()) {
@@ -70,6 +71,19 @@ pub fn switchCmd(allocator: Allocator, git: *git_mod.Git, homeDir: []const u8, a
     const ini_path = try paths.getRiceIniPath(allocator, homeDir);
     defer allocator.free(ini_path);
 
+    var existing_remote: ?[]const u8 = null;
+    if (config.loadConfig(allocator, ini_path)) |old_cfg| {
+        if (old_cfg.remote) |r| existing_remote = try allocator.dupe(u8, r);
+        old_cfg.deinit();
+        allocator.destroy(old_cfg);
+    } else |_| {
+        if (git.getRemote()) |r| {
+            existing_remote = r;
+        } else |_| {}
+    }
+    defer if (existing_remote) |r| allocator.free(r);
+
+    var cfg: *config.Config = undefined;
     if (git.getHEADFileContent(".rice.ini")) |ini_bytes| {
         defer allocator.free(ini_bytes);
         if (ini_bytes.len > 0) {
@@ -78,8 +92,47 @@ pub fn switchCmd(allocator: Allocator, git: *git_mod.Git, homeDir: []const u8, a
                 f.writeAll(ini_bytes) catch {};
                 f.close();
             }
+            cfg = config.loadConfig(allocator, ini_path) catch blk: {
+                const new_c = try allocator.create(config.Config);
+                new_c.* = config.Config.init(allocator);
+                break :blk new_c;
+            };
+        } else {
+            cfg = try allocator.create(config.Config);
+            cfg.* = config.Config.init(allocator);
         }
-    } else |_| {}
+    } else |_| {
+        cfg = try allocator.create(config.Config);
+        cfg.* = config.Config.init(allocator);
+
+        // If the branch in HEAD does not contain .rice.ini, populate [files]
+        // with all tracked files in HEAD so they are preserved and tracked in .rice.ini
+        if (git.listRefFiles("HEAD", &[_][]const u8{})) |head_files| {
+            defer {
+                for (head_files.items) |hf| allocator.free(hf);
+                head_files.deinit();
+            }
+            for (head_files.items) |hf| {
+                if (std.mem.eql(u8, hf, ".rice.ini")) continue;
+                const conf_p = try std.fmt.allocPrint(allocator, "~/{s}", .{hf});
+                defer allocator.free(conf_p);
+                _ = cfg.addFile(conf_p) catch {};
+            }
+        } else |_| {}
+    }
+    defer {
+        cfg.deinit();
+        allocator.destroy(cfg);
+    }
+
+    if (cfg.remote == null and existing_remote != null) {
+        cfg.remote = try allocator.dupe(u8, existing_remote.?);
+    }
+
+    if (cfg.branch) |b| allocator.free(b);
+    cfg.branch = try allocator.dupe(u8, branch_name.?);
+
+    try config.saveConfig(allocator, ini_path, cfg);
 }
 
 pub fn branchesCmd(allocator: Allocator, git: *git_mod.Git, args: []const []const u8) !void {

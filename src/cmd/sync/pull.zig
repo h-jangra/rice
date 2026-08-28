@@ -139,7 +139,38 @@ pub fn pullCmd(allocator: Allocator, git: *git_mod.Git, homeDir: []const u8, arg
                     f.close();
                 }
             }
-        } else |_| {}
+        } else |_| {
+            var cfg = config.loadConfig(allocator, ini_path) catch blk: {
+                const new_c = try allocator.create(config.Config);
+                new_c.* = config.Config.init(allocator);
+                break :blk new_c;
+            };
+            defer {
+                cfg.deinit();
+                allocator.destroy(cfg);
+            }
+
+            if (git.listRefFiles("HEAD", &[_][]const u8{})) |head_files| {
+                defer {
+                    for (head_files.items) |hf| allocator.free(hf);
+                    head_files.deinit();
+                }
+                for (head_files.items) |hf| {
+                    if (std.mem.eql(u8, hf, ".rice.ini")) continue;
+                    const conf_p = try std.fmt.allocPrint(allocator, "~/{s}", .{hf});
+                    defer allocator.free(conf_p);
+                    _ = cfg.addFile(conf_p) catch {};
+                }
+            } else |_| {}
+
+            if (git.getCurrentBranch()) |cur_b| {
+                defer allocator.free(cur_b);
+                if (cfg.branch) |b| allocator.free(b);
+                cfg.branch = try allocator.dupe(u8, cur_b);
+            } else |_| {}
+
+            _ = config.saveConfig(allocator, ini_path, cfg) catch {};
+        }
     } else {
         var incoming_files = git.listRefFiles("FETCH_HEAD", &[_][]const u8{}) catch std.ArrayList([]u8).init(allocator);
         defer {

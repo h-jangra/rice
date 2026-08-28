@@ -4,6 +4,7 @@ const Allocator = std.mem.Allocator;
 pub const Config = struct {
     allocator: Allocator,
     remote: ?[]const u8 = null,
+    branch: ?[]const u8 = null,
     files: std.ArrayList([]const u8),
     binaries: std.StringHashMap([]const u8),
 
@@ -11,6 +12,7 @@ pub const Config = struct {
         return .{
             .allocator = allocator,
             .remote = null,
+            .branch = null,
             .files = std.ArrayList([]const u8).init(allocator),
             .binaries = std.StringHashMap([]const u8).init(allocator),
         };
@@ -18,6 +20,7 @@ pub const Config = struct {
 
     pub fn deinit(self: *Config) void {
         if (self.remote) |r| self.allocator.free(r);
+        if (self.branch) |b| self.allocator.free(b);
         for (self.files.items) |f| self.allocator.free(f);
         self.files.deinit();
 
@@ -197,6 +200,9 @@ pub fn loadConfig(allocator: Allocator, path: []const u8) !*Config {
                 if (std.ascii.eqlIgnoreCase(key, "repo")) {
                     if (cfg.remote) |r| allocator.free(r);
                     cfg.remote = try allocator.dupe(u8, val);
+                } else if (std.ascii.eqlIgnoreCase(key, "branch")) {
+                    if (cfg.branch) |b| allocator.free(b);
+                    cfg.branch = try allocator.dupe(u8, val);
                 }
             }
         } else if (std.mem.eql(u8, current_section, "files")) {
@@ -220,8 +226,17 @@ pub fn saveConfig(allocator: Allocator, path: []const u8, cfg: *const Config) !v
     defer buffer.deinit();
     const writer = buffer.writer();
 
+    var has_header = false;
     if (cfg.remote) |r| {
-        try writer.print("repo = {s}\n\n", .{r});
+        try writer.print("repo = {s}\n", .{r});
+        has_header = true;
+    }
+    if (cfg.branch) |b| {
+        try writer.print("branch = {s}\n", .{b});
+        has_header = true;
+    }
+    if (has_header) {
+        try writer.writeAll("\n");
     }
 
     try writer.writeAll("[files]\n");

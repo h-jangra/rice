@@ -10,7 +10,7 @@ pub fn installCmd(allocator: Allocator, git: *git_mod.Git, homeDir: []const u8, 
     defer bin_args.deinit();
 
     for (args) |arg| {
-        if (std.mem.eql(u8, arg, "-b") or std.mem.eql(u8, arg, "--bin") or std.mem.eql(u8, arg, "--bins")) {
+        if (std.mem.eql(u8, arg, "--bin") or std.mem.eql(u8, arg, "--bins")) {
             bin_mode = true;
         } else if (std.mem.startsWith(u8, arg, "--bin=")) {
             bin_mode = true;
@@ -19,10 +19,6 @@ pub fn installCmd(allocator: Allocator, git: *git_mod.Git, homeDir: []const u8, 
         } else if (std.mem.startsWith(u8, arg, "--bins=")) {
             bin_mode = true;
             const val = arg["--bins=".len..];
-            if (val.len > 0) try bin_args.append(val);
-        } else if (std.mem.startsWith(u8, arg, "-b=")) {
-            bin_mode = true;
-            const val = arg["-b=".len..];
             if (val.len > 0) try bin_args.append(val);
         } else {
             try bin_args.append(arg);

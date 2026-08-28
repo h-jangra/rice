@@ -173,24 +173,25 @@ const command_help_map = std.StaticStringMap([]const u8).initComptime(.{
     .{
         "install",
         \\Usage:
-        \\  rice install <name> [--repo <url>] [--branch <branch>] [--contents|-C]
-        \\  rice install <source> <destination> [--repo <url>] [--branch <branch>] [--contents|-C]
+        \\  rice install <name> [--repo <url>] [-b|--branch <branch>] [--contents|-C]
+        \\  rice install <source> <destination> [--repo <url>] [-b|--branch <branch>] [--contents|-C]
         \\  rice install <github-url> <destination> [--contents|-C]
-        \\  rice install -b|--bin <source> [--tag <tag>] [--name <name>] [--save]
+        \\  rice install --bin <source> [--tag <tag>] [--name <name>] [--save]
         \\
         \\Aliases:
         \\  rice i
         \\
         \\Options:
-        \\  -b, --bin, --bins   Install executable binary to ~/.local/bin
+        \\  --bin, --bins       Install executable binary to ~/.local/bin
         \\  --repo <url>        Remote repository URL (defaults to ~/.rice.ini repo)
-        \\  --branch <branch>   Branch name (default: main on unix, windows on windows)
+        \\  -b, --branch <name> Branch name (default: main on unix, windows on windows)
         \\  --contents, -C      Extract directory contents directly into destination
         \\
         \\Examples:
         \\  rice install nvim
-        \\  rice install -b sharkdp/bat
-        \\  rice install -b junegunn/fzf --save
+        \\  rice install nvim -b main
+        \\  rice install --bin sharkdp/bat
+        \\  rice install --bin junegunn/fzf --save
         \\  rice install tmux --repo https://github.com/user/dotfiles
         \\  rice install config/tmux ~/.config/tmux --repo https://github.com/webpro/dotfiles
         \\  rice install .zshrc ~/.zshrc --repo https://github.com/user/dotfiles

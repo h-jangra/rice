@@ -17,15 +17,16 @@ pub fn printInstallUsage() void {
     const stderr = std.io.getStdErr().writer();
     stderr.writeAll(
         \\Usage:
-        \\  rice install <name> [--repo <url>] [--branch <branch>] [--contents|-C]
-        \\  rice install <source> <destination> [--repo <url>] [--branch <branch>] [--contents|-C]
+        \\  rice install <name> [--repo <url>] [-b|--branch <branch>] [--contents|-C]
+        \\  rice install <source> <destination> [--repo <url>] [-b|--branch <branch>] [--contents|-C]
         \\  rice install <github-url> <destination> [--contents|-C]
-        \\  rice install -b|--bin <source> [--tag <tag>] [--name <name>] [--save]
+        \\  rice install --bin <source> [--tag <tag>] [--name <name>] [--save]
         \\
         \\Examples:
         \\  rice install nvim
-        \\  rice install -b sharkdp/bat
-        \\  rice install -b junegunn/fzf --save
+        \\  rice install nvim -b main
+        \\  rice install --bin sharkdp/bat
+        \\  rice install --bin junegunn/fzf --save
         \\  rice install tmux --repo https://github.com/user/dotfiles
         \\  rice install config/tmux ~/.config/tmux --repo https://github.com/webpro/dotfiles
         \\  rice install .zshrc ~/.zshrc --repo https://github.com/user/dotfiles
@@ -41,23 +42,24 @@ pub fn printInstallHelp() void {
     const stdout = std.io.getStdOut().writer();
     stdout.writeAll(
         \\Usage:
-        \\  rice install <name> [--repo <url>] [--branch <branch>] [--contents|-C]
-        \\  rice install <source> <destination> [--repo <url>] [--branch <branch>] [--contents|-C]
+        \\  rice install <name> [--repo <url>] [-b|--branch <branch>] [--contents|-C]
+        \\  rice install <source> <destination> [--repo <url>] [-b|--branch <branch>] [--contents|-C]
         \\  rice install <github-url> <destination> [--contents|-C]
-        \\  rice install -b|--bin <source> [--tag <tag>] [--name <name>] [--save]
+        \\  rice install --bin <source> [--tag <tag>] [--name <name>] [--save]
         \\
         \\Aliases:
         \\  rice i
         \\
         \\Options:
-        \\  -b, --bin, --bins   Install executable binary to ~/.local/bin
+        \\  --bin, --bins       Install executable binary to ~/.local/bin
         \\  --repo <url>        Remote repository URL (defaults to ~/.rice.ini repo)
-        \\  --branch <branch>   Branch name (default: main on unix, windows on windows)
+        \\  -b, --branch <name> Branch name (default: main on unix, windows on windows)
         \\  --contents, -C      Extract directory contents directly into destination
         \\
         \\Examples:
         \\  rice install nvim
-        \\  rice install -b sharkdp/bat
+        \\  rice install nvim -b main
+        \\  rice install --bin sharkdp/bat
         \\  rice install -b junegunn/fzf --save
         \\  rice install tmux --repo https://github.com/user/dotfiles
         \\  rice install config/tmux ~/.config/tmux --repo https://github.com/webpro/dotfiles
@@ -102,15 +104,17 @@ pub fn installDotfiles(allocator: Allocator, git: *git_mod.Git, homeDir: []const
             i += 1;
         } else if (std.mem.startsWith(u8, arg, "--repo=")) {
             repo_flag = std.mem.trim(u8, arg["--repo=".len..], " \t\r\n");
-        } else if (std.mem.eql(u8, arg, "--branch")) {
+        } else if (std.mem.eql(u8, arg, "--branch") or std.mem.eql(u8, arg, "-b")) {
             if (i + 1 >= args.len) {
-                std.debug.print("Error: --branch requires a branch name argument.\n", .{});
+                std.debug.print("Error: -b/--branch requires a branch name argument.\n", .{});
                 return error.InvalidArgs;
             }
             branch_flag = std.mem.trim(u8, args[i + 1], " \t\r\n");
             i += 1;
         } else if (std.mem.startsWith(u8, arg, "--branch=")) {
             branch_flag = std.mem.trim(u8, arg["--branch=".len..], " \t\r\n");
+        } else if (std.mem.startsWith(u8, arg, "-b=")) {
+            branch_flag = std.mem.trim(u8, arg["-b=".len..], " \t\r\n");
         } else if (std.mem.eql(u8, arg, "--contents") or std.mem.eql(u8, arg, "-C")) {
             contents_flag = true;
         } else if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
@@ -142,7 +146,8 @@ pub fn installDotfiles(allocator: Allocator, git: *git_mod.Git, homeDir: []const
     var dest_path: []u8 = undefined;
     var repo_url: ?[]u8 = null;
     defer if (repo_url) |r| allocator.free(r);
-    var branch: []const u8 = branch_flag orelse defaultBranch();
+    var branch_url: ?[]u8 = null;
+    defer if (branch_url) |b| allocator.free(b);
     var is_outside_home = false;
 
     if (positional.items.len == 2) {
@@ -169,7 +174,7 @@ pub fn installDotfiles(allocator: Allocator, git: *git_mod.Git, homeDir: []const
                 dest_path = dest_res.abs_path;
                 is_outside_home = dest_res.is_outside_home;
                 repo_url = try allocator.dupe(u8, gh_info.repo_url);
-                branch = try allocator.dupe(u8, gh_info.branch);
+                branch_url = try allocator.dupe(u8, gh_info.branch);
             } else |_| {
                 return url.runDirectURLInstall(allocator, homeDir, raw_src, raw_dst, contents_flag);
             }
@@ -192,11 +197,21 @@ pub fn installDotfiles(allocator: Allocator, git: *git_mod.Git, homeDir: []const
         }
     }
 
+    var branch_allocated: ?[]u8 = null;
+    defer if (branch_allocated) |b| allocator.free(b);
+
+    var branch: []const u8 = "";
+    if (branch_flag) |bf| {
+        branch = bf;
+    } else if (branch_url) |bu| {
+        branch = bu;
+    }
+
     if (repo_flag) |rf| {
         if (repo_url) |r| allocator.free(r);
         repo_url = try paths.normalizeRepoURL(allocator, rf);
     }
-    if (repo_url == null) {
+    if (repo_url == null or branch.len == 0) {
         const ini_path = try paths.getRiceIniPath(allocator, homeDir);
         defer allocator.free(ini_path);
         if (config.loadConfig(allocator, ini_path)) |cfg| {
@@ -204,16 +219,32 @@ pub fn installDotfiles(allocator: Allocator, git: *git_mod.Git, homeDir: []const
                 cfg.deinit();
                 allocator.destroy(cfg);
             }
-            if (cfg.remote) |r| {
+            if (repo_url == null and cfg.remote != null) {
+                repo_url = try paths.normalizeRepoURL(allocator, cfg.remote.?);
+            }
+            if (branch.len == 0 and cfg.branch != null and cfg.branch.?.len > 0) {
+                branch_allocated = try allocator.dupe(u8, cfg.branch.?);
+                branch = branch_allocated.?;
+            }
+        } else |_| {}
+    }
+
+    if (git.isBareRepo()) {
+        if (repo_url == null) {
+            if (git.getRemote()) |r| {
                 repo_url = try paths.normalizeRepoURL(allocator, r);
-            }
-        } else |_| {
-            if (git.isBareRepo()) {
-                if (git.getRemote()) |r| {
-                    repo_url = try paths.normalizeRepoURL(allocator, r);
-                } else |_| {}
-            }
+            } else |_| {}
         }
+        if (branch.len == 0) {
+            if (git.getCurrentBranch()) |cur_b| {
+                branch_allocated = cur_b;
+                branch = cur_b;
+            } else |_| {}
+        }
+    }
+
+    if (branch.len == 0) {
+        branch = defaultBranch();
     }
 
     if (repo_url == null or repo_url.?.len == 0) {

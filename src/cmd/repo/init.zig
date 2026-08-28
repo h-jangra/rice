@@ -81,6 +81,34 @@ pub fn initCmd(allocator: Allocator, git: *git_mod.Git, homeDir: []const u8, arg
                 defer allocator.free(upstream_arg);
                 _ = git.run(&[_][]const u8{ "branch", upstream_arg, db }) catch {};
 
+                if (git.getHEADFileContent(".rice.ini")) |ini_bytes| {
+                    defer allocator.free(ini_bytes);
+                    if (ini_bytes.len > 0) {
+                        const file = std.fs.createFileAbsolute(ini_path, .{ .mode = 0o644 }) catch null;
+                        if (file) |f| {
+                            f.writeAll(ini_bytes) catch {};
+                            f.close();
+                        }
+                    }
+                } else |_| {
+                    if (git.listRefFiles("HEAD", &[_][]const u8{})) |head_files| {
+                        defer {
+                            for (head_files.items) |hf| allocator.free(hf);
+                            head_files.deinit();
+                        }
+                        for (head_files.items) |hf| {
+                            if (std.mem.eql(u8, hf, ".rice.ini")) continue;
+                            const conf_p = try std.fmt.allocPrint(allocator, "~/{s}", .{hf});
+                            defer allocator.free(conf_p);
+                            _ = cfg.addFile(conf_p) catch {};
+                        }
+                    } else |_| {}
+                }
+
+                if (cfg.branch) |b| allocator.free(b);
+                cfg.branch = try allocator.dupe(u8, db);
+                try config.saveConfig(allocator, ini_path, cfg);
+
                 std.debug.print("Initialized bare repository in {s}\nRemote origin configured: {s}\nConnected to remote branch '{s}'\nCreated configuration in {s}\n", .{
                     git.rice_dir,
                     remote_url.?,

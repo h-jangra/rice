@@ -26,6 +26,10 @@ test "config: normalization and ini parsing" {
 
     _ = try cfg.addBinary("bat", "sharkdp/bat");
     try std.testing.expectEqualStrings("sharkdp/bat", cfg.binaries.get("bat").?);
+
+    cfg.remote = try allocator.dupe(u8, "https://github.com/test/dotfiles.git");
+    cfg.branch = try allocator.dupe(u8, "main");
+    try std.testing.expectEqualStrings("main", cfg.branch.?);
 }
 
 test "paths: sensitive file detection" {

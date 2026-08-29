@@ -30,10 +30,10 @@ pub fn installBinary(allocator: Allocator, opts: InstallBinOptions, homeDir: []c
     };
     defer src.deinit(allocator);
 
-    const tmp_dir_path = try std.fmt.allocPrint(allocator, "/tmp/rice-bin-{d}", .{std.time.milliTimestamp()});
+    const tmp_dir_path = try std.fmt.allocPrint(allocator, "/tmp/rice-bin-{d}", .{fs.getMilliTimestamp()});
     defer allocator.free(tmp_dir_path);
-    try std.fs.cwd().makePath(tmp_dir_path);
-    defer std.fs.deleteTreeAbsolute(tmp_dir_path) catch {};
+    try fs.makePath(tmp_dir_path);
+    defer fs.deleteTreeAbsolute(tmp_dir_path) catch {};
 
     var asset_name: []u8 = undefined;
     var repo_name: []u8 = undefined;
@@ -46,7 +46,7 @@ pub fn installBinary(allocator: Allocator, opts: InstallBinOptions, homeDir: []c
         .local => {
             asset_name = try allocator.dupe(u8, std.fs.path.basename(src.path));
             repo_name = try allocator.dupe(u8, "");
-            const f = std.fs.openFileAbsolute(src.path, .{}) catch |err| {
+            const f = fs.openFileAbsolute(src.path, .{}) catch |err| {
                 if (err == error.IsDir) {
                     std.debug.print("Error: path is a directory, expected executable file or archive: {s}\n", .{src.path});
                 } else if (err == error.FileNotFound) {
@@ -56,8 +56,8 @@ pub fn installBinary(allocator: Allocator, opts: InstallBinOptions, homeDir: []c
                 }
                 return err;
             };
-            defer f.close();
-            data = try f.readToEndAlloc(allocator, 100 * 1024 * 1024);
+            f.close(paths.getProcessIo());
+            data = try std.Io.Dir.cwd().readFileAlloc(paths.getProcessIo(), src.path, allocator, .limited(100 * 1024 * 1024));
         },
         .url => {
             var url_clean = src.url;
@@ -74,9 +74,7 @@ pub fn installBinary(allocator: Allocator, opts: InstallBinOptions, homeDir: []c
                 std.debug.print("Error: failed to download binary from {s}\n", .{src.url});
                 return err;
             };
-            const f = try std.fs.openFileAbsolute(dl_path, .{});
-            defer f.close();
-            data = try f.readToEndAlloc(allocator, 100 * 1024 * 1024);
+            data = try std.Io.Dir.cwd().readFileAlloc(paths.getProcessIo(), dl_path, allocator, .limited(100 * 1024 * 1024));
         },
         .github => {
             repo_name = try allocator.dupe(u8, src.repo);
@@ -103,9 +101,7 @@ pub fn installBinary(allocator: Allocator, opts: InstallBinOptions, homeDir: []c
                 std.debug.print("Error: failed to download asset from {s}\n", .{gh_asset.download_url});
                 return err;
             };
-            const f = try std.fs.openFileAbsolute(dl_path, .{});
-            defer f.close();
-            data = try f.readToEndAlloc(allocator, 100 * 1024 * 1024);
+            data = try std.Io.Dir.cwd().readFileAlloc(paths.getProcessIo(), dl_path, allocator, .limited(100 * 1024 * 1024));
         },
     }
     defer allocator.free(asset_name);
@@ -123,7 +119,7 @@ pub fn installBinary(allocator: Allocator, opts: InstallBinOptions, homeDir: []c
         std.debug.print("Finding executable...\n", .{});
         const extract_dir = try std.fs.path.join(allocator, &[_][]const u8{ tmp_dir_path, "extracted" });
         defer allocator.free(extract_dir);
-        try std.fs.cwd().makePath(extract_dir);
+        try fs.makePath(extract_dir);
         fs.extractArchive(allocator, data, asset_name, extract_dir) catch |err| {
             std.debug.print("Error: failed to extract archive {s}: {s}\n", .{ asset_name, @errorName(err) });
             return err;
@@ -134,20 +130,17 @@ pub fn installBinary(allocator: Allocator, opts: InstallBinOptions, homeDir: []c
         } else |err| {
             if (err == error.MultipleBinariesFound) {
                 // Interactive selection
-                var dir = try std.fs.openDirAbsolute(extract_dir, .{ .iterate = true });
-                defer dir.close();
-                var walker = try dir.walk(allocator);
-                defer walker.deinit();
-
-                var cands = std.ArrayList([]const u8).init(allocator);
+                var cands: std.ArrayList([]const u8) = .empty;
                 defer {
                     for (cands.items) |c| allocator.free(c);
-                    cands.deinit();
+                    cands.deinit(allocator);
                 }
-
-                while (try walker.next()) |entry| {
-                    if (!extract.isIgnoredCandidate(entry.path, entry.kind == .directory, std.fs.path.basename(entry.path))) {
-                        try cands.append(try allocator.dupe(u8, entry.path));
+                var extract_cand_dir = try fs.openDirAbsolute(extract_dir, .{ .iterate = true });
+                defer extract_cand_dir.close(paths.getProcessIo());
+                var it = extract_cand_dir.iterate();
+                while (try it.next(paths.getProcessIo())) |entry| {
+                    if (!extract.isIgnoredCandidate(entry.name, entry.kind == .directory, entry.name)) {
+                        try cands.append(allocator, try allocator.dupe(u8, entry.name));
                     }
                 }
 
@@ -173,16 +166,16 @@ pub fn installBinary(allocator: Allocator, opts: InstallBinOptions, homeDir: []c
         if (raw_name.len == 0) raw_name = repo_name;
         if (raw_name.len == 0) raw_name = asset_name;
         binary_path = try std.fs.path.join(allocator, &[_][]const u8{ tmp_dir_path, raw_name });
-        const f = try std.fs.createFileAbsolute(binary_path, .{ .mode = 0o755 });
-        try f.writeAll(data);
-        f.close();
+        const f = try fs.createFileAbsolute(binary_path, .{ .permissions = @enumFromInt(0o755) });
+        try f.writePositionalAll(paths.getProcessIo(), data, 0);
+        f.close(paths.getProcessIo());
     }
     defer allocator.free(binary_path);
 
     // Validate that the resolved binary is actually an executable / suitable binary
-    const bin_f = try std.fs.openFileAbsolute(binary_path, .{});
-    defer bin_f.close();
-    const bin_data = try bin_f.readToEndAlloc(allocator, 100 * 1024 * 1024);
+    const bin_f = try fs.openFileAbsolute(binary_path, .{});
+    defer bin_f.close(paths.getProcessIo());
+    const bin_data = try std.Io.Dir.cwd().readFileAlloc(paths.getProcessIo(), binary_path, allocator, .limited(100 * 1024 * 1024));
     defer allocator.free(bin_data);
 
     if (bin_data.len == 0) {
@@ -198,8 +191,8 @@ pub fn installBinary(allocator: Allocator, opts: InstallBinOptions, homeDir: []c
     const is_candidate_ignored = extract.isIgnoredCandidate(binary_path, false, std.fs.path.basename(binary_path));
     var is_executable = extract.isExecutableBinary(bin_data);
     if (!is_executable) {
-        if (bin_f.stat()) |st| {
-            if ((st.mode & 0o111) != 0 and !is_candidate_ignored) {
+        if (bin_f.stat(paths.getProcessIo())) |st| {
+            if ((@intFromEnum(st.permissions) & 0o111) != 0 and !is_candidate_ignored) {
                 is_executable = true;
             }
         } else |_| {}
@@ -230,29 +223,29 @@ pub fn installBinary(allocator: Allocator, opts: InstallBinOptions, homeDir: []c
 
     const bin_dir = try std.fs.path.join(allocator, &[_][]const u8{ homeDir, ".local", "bin" });
     defer allocator.free(bin_dir);
-    try std.fs.cwd().makePath(bin_dir);
+    try fs.makePath(bin_dir);
 
     const final_path = try std.fs.path.join(allocator, &[_][]const u8{ bin_dir, bin_name });
     errdefer allocator.free(final_path);
 
-    const staging_path = try std.fmt.allocPrint(allocator, "{s}/.rice-tmp-{d}", .{ bin_dir, std.time.milliTimestamp() });
+    const staging_path = try std.fmt.allocPrint(allocator, "{s}/.rice-tmp-{d}", .{ bin_dir, fs.getMilliTimestamp() });
     defer allocator.free(staging_path);
 
-    const st_f = try std.fs.createFileAbsolute(staging_path, .{ .mode = 0o755 });
-    try st_f.writeAll(bin_data);
-    st_f.close();
-    defer std.fs.deleteFileAbsolute(staging_path) catch {};
+    const st_f = try fs.createFileAbsolute(staging_path, .{ .permissions = @enumFromInt(0o755) });
+    try st_f.writePositionalAll(paths.getProcessIo(), bin_data, 0);
+    st_f.close(paths.getProcessIo());
+    defer fs.deleteFileAbsolute(staging_path) catch {};
 
-    std.fs.deleteFileAbsolute(final_path) catch {};
-    std.fs.renameAbsolute(staging_path, final_path) catch {
+    fs.deleteFileAbsolute(final_path) catch {};
+    fs.renameAbsolute(staging_path, final_path) catch {
         try fs.copyFile(staging_path, final_path);
     };
 
     // Chmod 0755 on platforms that support executable bit
     if (builtin.os.tag != .windows) {
-        const final_f = try std.fs.openFileAbsolute(final_path, .{});
-        try final_f.chmod(0o755);
-        final_f.close();
+        const final_f = try fs.openFileAbsolute(final_path, .{});
+        try final_f.setPermissions(paths.getProcessIo(), @enumFromInt(0o755));
+        final_f.close(paths.getProcessIo());
     }
 
     if (opts.save) {

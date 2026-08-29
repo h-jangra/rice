@@ -386,13 +386,24 @@ pub fn printCommandHelp(cmd_name: []const u8) void {
     std.process.exit(1);
 }
 
-pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+pub fn main(init: std.process.Init) !void {
+    paths.setProcessIo(init.io);
+    paths.setProcessEnviron(init.minimal.environ);
+
+    var gpa: std.heap.DebugAllocator(.{}) = .init;
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    const args = try std.process.argsAlloc(allocator);
-    defer std.process.argsFree(allocator, args);
+    var args_list: std.ArrayList([]const u8) = .empty;
+    defer args_list.deinit(allocator);
+
+    var it = try std.process.Args.Iterator.initAllocator(init.minimal.args, allocator);
+    defer it.deinit();
+
+    while (it.next()) |arg| {
+        try args_list.append(allocator, arg);
+    }
+    const args = args_list.items;
 
     if (args.len < 2) {
         printCompactUsage();

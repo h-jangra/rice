@@ -48,6 +48,7 @@ fn tryExtractGitHubOwnerRepo(s: []const u8) ?struct { owner: []const u8, repo: [
 }
 
 const paths = @import("../paths/mod.zig");
+const fs = @import("../fs.zig");
 
 pub fn parseBinarySource(allocator: Allocator, source: []const u8, homeDir: []const u8) !BinarySource {
     const s = std.mem.trim(u8, source, " \t\r\n");
@@ -66,13 +67,13 @@ pub fn parseBinarySource(allocator: Allocator, source: []const u8, homeDir: []co
         const resolved = try paths.resolveUserPath(allocator, homeDir, s);
         errdefer allocator.free(resolved);
 
-        const file = std.fs.openFileAbsolute(resolved, .{}) catch |err| {
+        const file = fs.openFileAbsolute(resolved, .{}) catch |err| {
             allocator.free(resolved);
             if (err == error.IsDir) return error.LocalPathIsDirectory;
             if (err == error.FileNotFound) return error.LocalFileNotFound;
             return err;
         };
-        file.close();
+        file.close(paths.getProcessIo());
 
         return BinarySource{
             .source_type = .local,
@@ -81,8 +82,8 @@ pub fn parseBinarySource(allocator: Allocator, source: []const u8, homeDir: []co
     }
 
     if (paths.resolveUserPath(allocator, homeDir, s)) |resolved| {
-        if (std.fs.openFileAbsolute(resolved, .{})) |f| {
-            f.close();
+        if (fs.openFileAbsolute(resolved, .{})) |f| {
+            f.close(paths.getProcessIo());
             return BinarySource{
                 .source_type = .local,
                 .path = resolved,

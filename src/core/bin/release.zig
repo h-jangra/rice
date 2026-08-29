@@ -1,5 +1,6 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
+const paths = @import("../paths/mod.zig");
 
 pub fn matchAsset(name: []const u8, target_os: []const u8, target_arch: []const u8) bool {
     var lower_buf: [256]u8 = undefined;
@@ -45,40 +46,34 @@ pub fn fetchGitHubReleaseAsset(allocator: Allocator, owner: []const u8, repo: []
         try std.fmt.allocPrint(allocator, "https://api.github.com/repos/{s}/{s}/releases/latest", .{ owner, repo });
     defer allocator.free(api_url);
 
-    var args = std.ArrayList([]const u8).init(allocator);
-    defer args.deinit();
-    try args.appendSlice(&[_][]const u8{ "curl", "-fsSL", "-H", "Accept: application/vnd.github.v3+json", "-H", "User-Agent: rice-bin" });
+    var args: std.ArrayList([]const u8) = .empty;
+    defer args.deinit(allocator);
+    try args.appendSlice(allocator, &[_][]const u8{ "curl", "-fsSL", "-H", "Accept: application/vnd.github.v3+json", "-H", "User-Agent: rice-bin" });
 
     var token_header: ?[]u8 = null;
     defer if (token_header) |th| allocator.free(th);
-    if (std.process.getEnvVarOwned(allocator, "GITHUB_TOKEN")) |tok| {
+    if (std.process.Environ.getAlloc(paths.getProcessEnviron(), allocator, "GITHUB_TOKEN")) |tok| {
         defer allocator.free(tok);
         if (tok.len > 0) {
             token_header = try std.fmt.allocPrint(allocator, "Authorization: Bearer {s}", .{tok});
-            try args.appendSlice(&[_][]const u8{ "-H", token_header.? });
+            try args.appendSlice(allocator, &[_][]const u8{ "-H", token_header.? });
         }
     } else |_| {}
 
-    try args.append(api_url);
+    try args.append(allocator, api_url);
 
-    var child = std.process.Child.init(args.items, allocator);
-    child.stdin_behavior = .Ignore;
-    child.stdout_behavior = .Pipe;
-    child.stderr_behavior = .Pipe;
-    try child.spawn();
+    const res = try std.process.run(allocator, paths.getProcessIo(), .{
+        .argv = args.items,
+    });
+    defer allocator.free(res.stdout);
+    defer allocator.free(res.stderr);
 
-    const stdout = try child.stdout.?.readToEndAlloc(allocator, 5 * 1024 * 1024);
-    defer allocator.free(stdout);
-    const stderr = try child.stderr.?.readToEndAlloc(allocator, 1024 * 1024);
-    defer allocator.free(stderr);
-
-    const term = try child.wait();
-    if (term != .Exited or term.Exited != 0) {
-        std.debug.print("failed to fetch release from GitHub for {s}/{s}: {s}\n", .{ owner, repo, stderr });
+    if (res.term != .exited or res.term.exited != 0) {
+        std.debug.print("failed to fetch release from GitHub for {s}/{s}: {s}\n", .{ owner, repo, res.stderr });
         return error.GitHubApiFailed;
     }
 
-    const parsed = std.json.parseFromSlice(std.json.Value, allocator, stdout, .{}) catch return error.GitHubJsonParseFailed;
+    const parsed = std.json.parseFromSlice(std.json.Value, allocator, res.stdout, .{}) catch return error.GitHubJsonParseFailed;
     defer parsed.deinit();
 
     if (parsed.value != .object) return error.GitHubJsonParseFailed;

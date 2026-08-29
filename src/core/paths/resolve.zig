@@ -2,10 +2,40 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const clean = @import("clean.zig");
 
+const builtin = @import("builtin");
+
+var process_io: ?std.Io = null;
+var process_environ: ?std.process.Environ = null;
+
+pub fn setProcessIo(io: std.Io) void {
+    process_io = io;
+}
+
+pub fn setProcessEnviron(env: std.process.Environ) void {
+    process_environ = env;
+}
+
+pub fn getProcessIo() std.Io {
+    if (process_io) |io| return io;
+    if (builtin.is_test) return std.testing.io;
+    unreachable;
+}
+
+pub fn getProcessEnviron() std.process.Environ {
+    if (process_environ) |env| return env;
+    return .{
+        .block = switch (builtin.os.tag) {
+            .windows => .global,
+            else => .empty,
+        },
+    };
+}
+
 pub fn getHomeDir(allocator: Allocator) ![]u8 {
-    if (std.process.getEnvVarOwned(allocator, "HOME")) |h| {
+    const env = getProcessEnviron();
+    if (std.process.Environ.getAlloc(env, allocator, "HOME")) |h| {
         // Clean trailing slash
-        const trimmed = std.mem.trimRight(u8, h, "/\\");
+        const trimmed = std.mem.trimEnd(u8, h, "/\\");
         if (trimmed.len < h.len) {
             const res = try allocator.dupe(u8, trimmed);
             allocator.free(h);
@@ -14,8 +44,8 @@ pub fn getHomeDir(allocator: Allocator) ![]u8 {
         return h;
     } else |_| {}
 
-    if (std.process.getEnvVarOwned(allocator, "USERPROFILE")) |h| {
-        const trimmed = std.mem.trimRight(u8, h, "/\\");
+    if (std.process.Environ.getAlloc(env, allocator, "USERPROFILE")) |h| {
+        const trimmed = std.mem.trimEnd(u8, h, "/\\");
         if (trimmed.len < h.len) {
             const res = try allocator.dupe(u8, trimmed);
             allocator.free(h);
@@ -54,8 +84,9 @@ pub fn resolveUserPath(allocator: Allocator, homeDir: []const u8, input: []const
         return clean.cleanPath(allocator, s);
     }
 
-    var cwd_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const cwd = std.posix.getcwd(&cwd_buf) catch return error.CannotGetCwd;
+    var cwd_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const cwd_len = std.process.currentPath(getProcessIo(), &cwd_buf) catch return error.CannotGetCwd;
+    const cwd = cwd_buf[0..cwd_len];
     const joined = try std.fs.path.join(allocator, &[_][]const u8{ cwd, s });
     defer allocator.free(joined);
     return clean.cleanPath(allocator, joined);
@@ -166,9 +197,9 @@ pub fn resolveInstallDestination(allocator: Allocator, homeDir: []const u8, user
     if (!isContents and itemName.len > 0) {
         const base = std.fs.path.basename(target);
         var is_dir = false;
-        if (std.fs.openDirAbsolute(target, .{})) |d| {
+        if (std.Io.Dir.openDirAbsolute(getProcessIo(), target, .{})) |d| {
             var dir = d;
-            dir.close();
+            dir.close(getProcessIo());
             is_dir = true;
         } else |_| {}
 

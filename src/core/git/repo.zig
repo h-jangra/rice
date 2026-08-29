@@ -48,27 +48,28 @@ pub const Git = struct {
 
     pub fn initBare(self: *const Git) !void {
         const argv = [_][]const u8{ "git", "init", "--bare", self.rice_dir };
-        var child = std.process.Child.init(&argv, self.allocator);
-        child.stdin_behavior = .Inherit;
-        child.stdout_behavior = .Inherit;
-        child.stderr_behavior = .Inherit;
-        try child.spawn();
-        const term = try child.wait();
-        if (term != .Exited or term.Exited != 0) return error.GitInitFailed;
+        var child = try std.process.spawn(paths.getProcessIo(), .{
+            .argv = &argv,
+            .stdin = .inherit,
+            .stdout = .inherit,
+            .stderr = .inherit,
+        });
+        const term = try child.wait(paths.getProcessIo());
+        if (term != .exited or term.exited != 0) return error.GitInitFailed;
 
         _ = self.bareRun(&[_][]const u8{ "config", "status.showUntrackedFiles", "no" }) catch {};
         _ = self.bareRun(&[_][]const u8{ "symbolic-ref", "HEAD", "refs/heads/main" }) catch {};
 
         const exclude_dir = try std.fs.path.join(self.allocator, &[_][]const u8{ self.rice_dir, "info" });
         defer self.allocator.free(exclude_dir);
-        try std.fs.cwd().makePath(exclude_dir);
+        try std.Io.Dir.cwd().createDirPath(paths.getProcessIo(), exclude_dir);
 
         const exclude_path = try std.fs.path.join(self.allocator, &[_][]const u8{ exclude_dir, "exclude" });
         defer self.allocator.free(exclude_path);
 
-        const file = try std.fs.createFileAbsolute(exclude_path, .{ .mode = 0o644 });
-        defer file.close();
-        try file.writeAll(".rice\n.rice/\n");
+        const file = try std.Io.Dir.cwd().createFile(paths.getProcessIo(), exclude_path, .{ .permissions = @enumFromInt(0o644) });
+        defer file.close(paths.getProcessIo());
+        try file.writePositionalAll(paths.getProcessIo(), ".rice\n.rice/\n", 0);
     }
 
     pub fn isBareRepo(self: *const Git) bool {
@@ -111,40 +112,40 @@ pub const Git = struct {
 
     pub fn add(self: *const Git, files: []const []const u8) !void {
         if (files.len == 0) return;
-        var args = std.ArrayList([]const u8).init(self.allocator);
-        defer args.deinit();
-        try args.append("add");
-        try args.append("--");
+        var args: std.ArrayList([]const u8) = .empty;
+        defer args.deinit(self.allocator);
+        try args.append(self.allocator, "add");
+        try args.append(self.allocator, "--");
         for (files) |f| {
-            try args.append(f);
+            try args.append(self.allocator, f);
         }
         try self.run(args.items);
     }
 
     pub fn addUpdate(self: *const Git, files: []const []const u8) !void {
         if (files.len == 0) return;
-        var args = std.ArrayList([]const u8).init(self.allocator);
-        defer args.deinit();
-        try args.append("add");
-        try args.append("-u");
-        try args.append("--");
+        var args: std.ArrayList([]const u8) = .empty;
+        defer args.deinit(self.allocator);
+        try args.append(self.allocator, "add");
+        try args.append(self.allocator, "-u");
+        try args.append(self.allocator, "--");
         for (files) |f| {
-            try args.append(f);
+            try args.append(self.allocator, f);
         }
         try self.run(args.items);
     }
 
     pub fn removeCached(self: *const Git, files: []const []const u8) !void {
         if (files.len == 0) return;
-        var args = std.ArrayList([]const u8).init(self.allocator);
-        defer args.deinit();
-        try args.append("rm");
-        try args.append("--cached");
-        try args.append("-r");
-        try args.append("--ignore-unmatch");
-        try args.append("--");
+        var args: std.ArrayList([]const u8) = .empty;
+        defer args.deinit(self.allocator);
+        try args.append(self.allocator, "rm");
+        try args.append(self.allocator, "--cached");
+        try args.append(self.allocator, "-r");
+        try args.append(self.allocator, "--ignore-unmatch");
+        try args.append(self.allocator, "--");
         for (files) |f| {
-            try args.append(f);
+            try args.append(self.allocator, f);
         }
         try self.run(args.items);
     }
@@ -183,32 +184,32 @@ pub const Git = struct {
     }
 
     pub fn status(self: *const Git, files: []const []const u8) !void {
-        var args = std.ArrayList([]const u8).init(self.allocator);
-        defer args.deinit();
-        try args.append("status");
-        try args.append("--");
+        var args: std.ArrayList([]const u8) = .empty;
+        defer args.deinit(self.allocator);
+        try args.append(self.allocator, "status");
+        try args.append(self.allocator, "--");
         if (files.len == 0) {
-            try args.append(".rice.ini");
+            try args.append(self.allocator, ".rice.ini");
         } else {
-            for (files) |f| try args.append(f);
+            for (files) |f| try args.append(self.allocator, f);
         }
         try self.run(args.items);
     }
 
     pub fn diff(self: *const Git, files: []const []const u8) !void {
-        var args = std.ArrayList([]const u8).init(self.allocator);
-        defer args.deinit();
-        try args.append("diff");
+        var args: std.ArrayList([]const u8) = .empty;
+        defer args.deinit(self.allocator);
+        try args.append(self.allocator, "diff");
         if (!self.hasCommits()) {
-            try args.append("--cached");
+            try args.append(self.allocator, "--cached");
         } else {
-            try args.append("HEAD");
+            try args.append(self.allocator, "HEAD");
         }
-        try args.append("--");
+        try args.append(self.allocator, "--");
         if (files.len == 0) {
-            try args.append(".rice.ini");
+            try args.append(self.allocator, ".rice.ini");
         } else {
-            for (files) |f| try args.append(f);
+            for (files) |f| try args.append(self.allocator, f);
         }
         try self.run(args.items);
     }
@@ -219,7 +220,7 @@ pub const Git = struct {
 
     pub fn listTrackedFiles(self: *const Git, paths_filter: []const []const u8) !std.ArrayList([]u8) {
         if (!self.hasCommits() or paths_filter.len == 0) {
-            return std.ArrayList([]u8).init(self.allocator);
+            return .empty;
         }
         return self.listRefFiles("HEAD", paths_filter);
     }
@@ -244,12 +245,12 @@ pub const Git = struct {
 
     pub fn checkoutHEAD(self: *const Git, files: []const []const u8) !void {
         if (files.len == 0) return;
-        var args = std.ArrayList([]const u8).init(self.allocator);
-        defer args.deinit();
-        try args.append("checkout");
-        try args.append("HEAD");
-        try args.append("--");
-        for (files) |f| try args.append(f);
+        var args: std.ArrayList([]const u8) = .empty;
+        defer args.deinit(self.allocator);
+        try args.append(self.allocator, "checkout");
+        try args.append(self.allocator, "HEAD");
+        try args.append(self.allocator, "--");
+        for (files) |f| try args.append(self.allocator, f);
         try self.run(args.items);
     }
 

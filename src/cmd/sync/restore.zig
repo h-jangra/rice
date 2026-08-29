@@ -9,14 +9,12 @@ const repo = @import("../repo/mod.zig");
 
 fn promptUser(prompt: []const u8) bool {
     std.debug.print("{s}", .{prompt});
-    const stdin = std.io.getStdIn().reader();
     var buf: [128]u8 = undefined;
-    if (stdin.readUntilDelimiterOrEof(&buf, '\n')) |line| {
-        if (line) |l| {
-            const trimmed = std.mem.trim(u8, l, " \t\r\n");
-            return std.ascii.eqlIgnoreCase(trimmed, "y") or std.ascii.eqlIgnoreCase(trimmed, "yes");
-        }
-    } else |_| {}
+    const n = std.Io.File.stdin().readStreaming(paths.getProcessIo(), &.{&buf}) catch return false;
+    if (n > 0) {
+        const trimmed = std.mem.trim(u8, buf[0..n], " \t\r\n");
+        return std.ascii.eqlIgnoreCase(trimmed, "y") or std.ascii.eqlIgnoreCase(trimmed, "yes");
+    }
     return false;
 }
 
@@ -39,12 +37,12 @@ pub fn restoreCmd(allocator: Allocator, git: *git_mod.Git, homeDir: []const u8, 
             return;
         }
 
-        var keys = std.ArrayList([]const u8).init(allocator);
-        defer keys.deinit();
+        var keys: std.ArrayList([]const u8) = .empty;
+        defer keys.deinit(allocator);
 
         var it = cfg.binaries.iterator();
         while (it.next()) |entry| {
-            try keys.append(entry.key_ptr.*);
+            try keys.append(allocator, entry.key_ptr.*);
         }
 
         std.mem.sort([]const u8, keys.items, {}, struct {
@@ -90,17 +88,17 @@ pub fn restoreCmd(allocator: Allocator, git: *git_mod.Git, homeDir: []const u8, 
     defer allocator.free(ini_path);
 
     var ini_exists = false;
-    if (std.fs.openFileAbsolute(ini_path, .{})) |f| {
-        f.close();
+    if (fs.openFileAbsolute(ini_path, .{})) |f| {
+        f.close(paths.getProcessIo());
         ini_exists = true;
     } else |_| {}
 
     if (!ini_exists) {
         if (git.getHEADFileContent(".rice.ini")) |ini_bytes| {
             defer allocator.free(ini_bytes);
-            const file = try std.fs.createFileAbsolute(ini_path, .{ .mode = 0o644 });
-            try file.writeAll(ini_bytes);
-            file.close();
+            const file = try fs.createFileAbsolute(ini_path, .{ .permissions = @enumFromInt(0o644) });
+            try file.writePositionalAll(paths.getProcessIo(), ini_bytes, 0);
+            file.close(paths.getProcessIo());
             std.debug.print("Restored {s} from repository HEAD.\n", .{ini_path});
         } else |_| {
             std.debug.print("Error: ~/.rice.ini not found on disk or in repository HEAD.\n", .{});
@@ -119,22 +117,22 @@ pub fn restoreCmd(allocator: Allocator, git: *git_mod.Git, homeDir: []const u8, 
         return;
     }
 
-    var git_paths = std.ArrayList([]const u8).init(allocator);
+    var git_paths: std.ArrayList([]const u8) = .empty;
     defer {
         for (git_paths.items) |gp| allocator.free(gp);
-        git_paths.deinit();
+        git_paths.deinit(allocator);
     }
 
     for (cfg.files.items) |f| {
         if (paths.gitPath(allocator, homeDir, f)) |gp| {
-            try git_paths.append(gp);
+            try git_paths.append(allocator, gp);
         } else |_| {}
     }
 
     var tracked_files = try git.listTrackedFiles(git_paths.items);
     defer {
         for (tracked_files.items) |tf| allocator.free(tf);
-        tracked_files.deinit();
+        tracked_files.deinit(allocator);
     }
 
     if (tracked_files.items.len == 0) {
@@ -142,25 +140,25 @@ pub fn restoreCmd(allocator: Allocator, git: *git_mod.Git, homeDir: []const u8, 
         return;
     }
 
-    var conflicts = std.ArrayList([]const u8).init(allocator);
+    var conflicts: std.ArrayList([]const u8) = .empty;
     defer {
         for (conflicts.items) |c| allocator.free(c);
-        conflicts.deinit();
+        conflicts.deinit(allocator);
     }
 
     for (tracked_files.items) |rel_file| {
         const full_p = try std.fs.path.join(allocator, &[_][]const u8{ homeDir, rel_file });
         defer allocator.free(full_p);
 
-        if (std.fs.openFileAbsolute(full_p, .{})) |f| {
-            defer f.close();
-            const local_bytes = f.readToEndAlloc(allocator, 50 * 1024 * 1024) catch continue;
+        if (fs.openFileAbsolute(full_p, .{})) |f| {
+            defer f.close(paths.getProcessIo());
+            const local_bytes = std.Io.Dir.cwd().readFileAlloc(paths.getProcessIo(), full_p, allocator, .limited(50 * 1024 * 1024)) catch continue;
             defer allocator.free(local_bytes);
 
             if (git.getHEADFileContent(rel_file) catch null) |repo_bytes| {
                 defer allocator.free(repo_bytes);
                 if (!std.mem.eql(u8, local_bytes, repo_bytes)) {
-                    try conflicts.append(try allocator.dupe(u8, rel_file));
+                    try conflicts.append(allocator, try allocator.dupe(u8, rel_file));
                 }
             }
         } else |_| {}
@@ -185,10 +183,10 @@ pub fn restoreCmd(allocator: Allocator, git: *git_mod.Git, homeDir: []const u8, 
         }
     }
 
-    var checkout_args = std.ArrayList([]const u8).init(allocator);
-    defer checkout_args.deinit();
-    try checkout_args.append(".rice.ini");
-    for (git_paths.items) |gp| try checkout_args.append(gp);
+    var checkout_args: std.ArrayList([]const u8) = .empty;
+    defer checkout_args.deinit(allocator);
+    try checkout_args.append(allocator, ".rice.ini");
+    for (git_paths.items) |gp| try checkout_args.append(allocator, gp);
 
     try git.checkoutHEAD(checkout_args.items);
 
@@ -213,34 +211,34 @@ pub fn discardCmd(allocator: Allocator, git: *git_mod.Git, homeDir: []const u8, 
     }
 
     var force = false;
-    var path_args = std.ArrayList([]const u8).init(allocator);
-    defer path_args.deinit();
+    var path_args: std.ArrayList([]const u8) = .empty;
+    defer path_args.deinit(allocator);
 
     for (args) |arg| {
         if (std.mem.eql(u8, arg, "-f") or std.mem.eql(u8, arg, "--force")) {
             force = true;
         } else {
-            try path_args.append(arg);
+            try path_args.append(allocator, arg);
         }
     }
 
-    var target_git_paths = std.ArrayList([]const u8).init(allocator);
+    var target_git_paths: std.ArrayList([]const u8) = .empty;
     defer {
         for (target_git_paths.items) |gp| allocator.free(gp);
-        target_git_paths.deinit();
+        target_git_paths.deinit(allocator);
     }
 
     if (path_args.items.len == 0) {
-        try target_git_paths.append(try allocator.dupe(u8, ".rice.ini"));
+        try target_git_paths.append(allocator, try allocator.dupe(u8, ".rice.ini"));
         for (cfg.files.items) |f| {
             if (paths.gitPath(allocator, homeDir, f)) |gp| {
-                try target_git_paths.append(gp);
+                try target_git_paths.append(allocator, gp);
             } else |_| {}
         }
     } else {
         for (path_args.items) |arg| {
             if (std.mem.eql(u8, arg, ".rice.ini")) {
-                try target_git_paths.append(try allocator.dupe(u8, ".rice.ini"));
+                try target_git_paths.append(allocator, try allocator.dupe(u8, ".rice.ini"));
                 continue;
             }
 
@@ -259,11 +257,12 @@ pub fn discardCmd(allocator: Allocator, git: *git_mod.Git, homeDir: []const u8, 
 
             if (!is_managed) {
                 if (git.listTrackedFiles(&[_][]const u8{res.git_path})) |tf| {
+                    var tf_mut = tf;
                     defer {
-                        for (tf.items) |item| allocator.free(item);
-                        tf.deinit();
+                        for (tf_mut.items) |item| allocator.free(item);
+                        tf_mut.deinit(allocator);
                     }
-                    if (tf.items.len > 0) is_managed = true;
+                    if (tf_mut.items.len > 0) is_managed = true;
                 } else |_| {}
             }
 
@@ -272,30 +271,30 @@ pub fn discardCmd(allocator: Allocator, git: *git_mod.Git, homeDir: []const u8, 
                 return error.PathNotTracked;
             }
 
-            try target_git_paths.append(try allocator.dupe(u8, res.git_path));
+            try target_git_paths.append(allocator, try allocator.dupe(u8, res.git_path));
         }
     }
 
-    var modified_git_paths = std.ArrayList([]const u8).init(allocator);
+    var modified_git_paths: std.ArrayList([]const u8) = .empty;
     defer {
         for (modified_git_paths.items) |gp| allocator.free(gp);
-        modified_git_paths.deinit();
+        modified_git_paths.deinit(allocator);
     }
-    var modified_display_paths = std.ArrayList([]const u8).init(allocator);
+    var modified_display_paths: std.ArrayList([]const u8) = .empty;
     defer {
         for (modified_display_paths.items) |dp| allocator.free(dp);
-        modified_display_paths.deinit();
+        modified_display_paths.deinit(allocator);
     }
 
     for (target_git_paths.items) |gp| {
         if (git.output(&[_][]const u8{ "diff", "HEAD", "--", gp })) |diff_out| {
             defer allocator.free(diff_out);
             if (diff_out.len > 0) {
-                try modified_git_paths.append(try allocator.dupe(u8, gp));
+                try modified_git_paths.append(allocator, try allocator.dupe(u8, gp));
                 if (std.mem.eql(u8, gp, ".rice.ini")) {
-                    try modified_display_paths.append(try allocator.dupe(u8, "~/.rice.ini"));
+                    try modified_display_paths.append(allocator, try allocator.dupe(u8, "~/.rice.ini"));
                 } else {
-                    try modified_display_paths.append(try std.fmt.allocPrint(allocator, "~/{s}", .{gp}));
+                    try modified_display_paths.append(allocator, try std.fmt.allocPrint(allocator, "~/{s}", .{gp}));
                 }
             }
         } else |_| {}
@@ -306,10 +305,10 @@ pub fn discardCmd(allocator: Allocator, git: *git_mod.Git, homeDir: []const u8, 
         return;
     }
 
-    var unique_git_paths = std.ArrayList([]const u8).init(allocator);
-    defer unique_git_paths.deinit();
-    var unique_display_paths = std.ArrayList([]const u8).init(allocator);
-    defer unique_display_paths.deinit();
+    var unique_git_paths: std.ArrayList([]const u8) = .empty;
+    defer unique_git_paths.deinit(allocator);
+    var unique_display_paths: std.ArrayList([]const u8) = .empty;
+    defer unique_display_paths.deinit(allocator);
 
     var seen = std.StringHashMap(void).init(allocator);
     defer seen.deinit();
@@ -317,8 +316,8 @@ pub fn discardCmd(allocator: Allocator, git: *git_mod.Git, homeDir: []const u8, 
     for (modified_git_paths.items, 0..) |gp, idx| {
         if (!seen.contains(gp)) {
             try seen.put(gp, {});
-            try unique_git_paths.append(gp);
-            try unique_display_paths.append(modified_display_paths.items[idx]);
+            try unique_git_paths.append(allocator, gp);
+            try unique_display_paths.append(allocator, modified_display_paths.items[idx]);
         }
     }
 

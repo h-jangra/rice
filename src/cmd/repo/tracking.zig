@@ -3,6 +3,7 @@ const Allocator = std.mem.Allocator;
 const git_mod = @import("../../core/git/mod.zig");
 const paths = @import("../../core/paths/mod.zig");
 const config = @import("../../core/config.zig");
+const fs = @import("../../core/fs.zig");
 
 pub fn loadConfigOrExit(allocator: Allocator, homeDir: []const u8) !*config.Config {
     const ini_path = try paths.getRiceIniPath(allocator, homeDir);
@@ -30,10 +31,10 @@ pub fn addCmd(allocator: Allocator, git: *git_mod.Git, homeDir: []const u8, args
         allocator.destroy(cfg);
     }
 
-    var git_paths_to_stage = std.ArrayList([]const u8).init(allocator);
+    var git_paths_to_stage: std.ArrayList([]const u8) = .empty;
     defer {
         for (git_paths_to_stage.items) |p| allocator.free(p);
-        git_paths_to_stage.deinit();
+        git_paths_to_stage.deinit(allocator);
     }
 
     var added_count: usize = 0;
@@ -49,13 +50,13 @@ pub fn addCmd(allocator: Allocator, git: *git_mod.Git, homeDir: []const u8, args
         defer res.deinit(allocator);
 
         var exists = false;
-        if (std.fs.openFileAbsolute(res.abs_path, .{})) |f| {
-            f.close();
+        if (fs.openFileAbsolute(res.abs_path, .{})) |f| {
+            f.close(paths.getProcessIo());
             exists = true;
         } else |_| {
-            if (std.fs.openDirAbsolute(res.abs_path, .{})) |d| {
+            if (fs.openDirAbsolute(res.abs_path, .{})) |d| {
                 var dir = d;
-                dir.close();
+                dir.close(paths.getProcessIo());
                 exists = true;
             } else |_| {}
         }
@@ -73,7 +74,7 @@ pub fn addCmd(allocator: Allocator, git: *git_mod.Git, homeDir: []const u8, args
             added_count += 1;
         }
 
-        try git_paths_to_stage.append(try allocator.dupe(u8, res.git_path));
+        try git_paths_to_stage.append(allocator, try allocator.dupe(u8, res.git_path));
         std.debug.print("Added '{s}' to rice tracking.\n", .{res.config_path});
     }
 
@@ -86,10 +87,10 @@ pub fn addCmd(allocator: Allocator, git: *git_mod.Git, homeDir: []const u8, args
         try config.saveConfig(allocator, ini_path, cfg);
     }
 
-    var stage_all = std.ArrayList([]const u8).init(allocator);
-    defer stage_all.deinit();
-    try stage_all.append(".rice.ini");
-    for (git_paths_to_stage.items) |p| try stage_all.append(p);
+    var stage_all: std.ArrayList([]const u8) = .empty;
+    defer stage_all.deinit(allocator);
+    try stage_all.append(allocator, ".rice.ini");
+    for (git_paths_to_stage.items) |p| try stage_all.append(allocator, p);
 
     try git.add(stage_all.items);
 }
@@ -123,8 +124,8 @@ pub fn removeCmd(allocator: Allocator, git: *git_mod.Git, homeDir: []const u8, a
                 const bin_file_p = std.fs.path.join(allocator, &[_][]const u8{ homeDir, ".local", "bin", bin_name }) catch null;
                 if (bin_file_p) |bfp| {
                     defer allocator.free(bfp);
-                    if (std.fs.openFileAbsolute(bfp, .{})) |f| {
-                        f.close();
+                    if (fs.openFileAbsolute(bfp, .{})) |f| {
+                        f.close(paths.getProcessIo());
                         is_binary = true;
                     } else |_| {}
                 }
@@ -165,16 +166,16 @@ pub fn statusCmd(allocator: Allocator, git: *git_mod.Git, homeDir: []const u8) !
         allocator.destroy(cfg);
     }
 
-    var list = std.ArrayList([]const u8).init(allocator);
+    var list: std.ArrayList([]const u8) = .empty;
     defer {
         for (list.items) |p| allocator.free(p);
-        list.deinit();
+        list.deinit(allocator);
     }
-    try list.append(try allocator.dupe(u8, ".rice.ini"));
+    try list.append(allocator, try allocator.dupe(u8, ".rice.ini"));
 
     for (cfg.files.items) |f| {
         if (paths.gitPath(allocator, homeDir, f)) |gp| {
-            try list.append(gp);
+            try list.append(allocator, gp);
         } else |_| {}
     }
 
@@ -188,10 +189,10 @@ pub fn diffCmd(allocator: Allocator, git: *git_mod.Git, homeDir: []const u8, arg
         allocator.destroy(cfg);
     }
 
-    var list = std.ArrayList([]const u8).init(allocator);
+    var list: std.ArrayList([]const u8) = .empty;
     defer {
         for (list.items) |p| allocator.free(p);
-        list.deinit();
+        list.deinit(allocator);
     }
 
     if (args.len > 0 and std.mem.trim(u8, args[0], " \t\r\n").len > 0) {
@@ -202,12 +203,12 @@ pub fn diffCmd(allocator: Allocator, git: *git_mod.Git, homeDir: []const u8, arg
             std.debug.print("Error: path '{s}' is not tracked by rice\n", .{res.config_path});
             return error.PathNotTracked;
         }
-        try list.append(try allocator.dupe(u8, res.git_path));
+        try list.append(allocator, try allocator.dupe(u8, res.git_path));
     } else {
-        try list.append(try allocator.dupe(u8, ".rice.ini"));
+        try list.append(allocator, try allocator.dupe(u8, ".rice.ini"));
         for (cfg.files.items) |f| {
             if (paths.gitPath(allocator, homeDir, f)) |gp| {
-                try list.append(gp);
+                try list.append(allocator, gp);
             } else |_| {}
         }
     }

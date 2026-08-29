@@ -5,22 +5,20 @@ const fs = @import("../fs.zig");
 
 fn confirmPrompt(prompt: []const u8) bool {
     std.debug.print("{s}", .{prompt});
-    const stdin = std.io.getStdIn().reader();
     var buf: [128]u8 = undefined;
-    if (stdin.readUntilDelimiterOrEof(&buf, '\n')) |line| {
-        if (line) |l| {
-            const trimmed = std.mem.trim(u8, l, " \t\r\n");
-            return std.ascii.eqlIgnoreCase(trimmed, "y") or std.ascii.eqlIgnoreCase(trimmed, "yes");
-        }
-    } else |_| {}
+    const n = std.Io.File.stdin().readStreaming(paths.getProcessIo(), &.{&buf}) catch return false;
+    if (n > 0) {
+        const trimmed = std.mem.trim(u8, buf[0..n], " \t\r\n");
+        return std.ascii.eqlIgnoreCase(trimmed, "y") or std.ascii.eqlIgnoreCase(trimmed, "yes");
+    }
     return false;
 }
 
 pub fn runDirectURLInstall(allocator: Allocator, homeDir: []const u8, rawURL: []const u8, rawDest: []const u8, contentsFlag: bool) !void {
-    const tmp_dir_path = try std.fmt.allocPrint(allocator, "/tmp/rice-dl-{d}", .{std.time.milliTimestamp()});
+    const tmp_dir_path = try std.fmt.allocPrint(allocator, "/tmp/rice-dl-{d}", .{fs.getMilliTimestamp()});
     defer allocator.free(tmp_dir_path);
-    try std.fs.cwd().makePath(tmp_dir_path);
-    defer std.fs.deleteTreeAbsolute(tmp_dir_path) catch {};
+    try fs.makePath(tmp_dir_path);
+    defer fs.deleteTreeAbsolute(tmp_dir_path) catch {};
 
     var dl_path: []u8 = undefined;
     var asset_name: []u8 = undefined;
@@ -39,7 +37,7 @@ pub fn runDirectURLInstall(allocator: Allocator, homeDir: []const u8, rawURL: []
         if (std.mem.indexOfAny(u8, clean_url, "?#")) |idx| {
             clean_url = clean_url[0..idx];
         }
-        clean_url = std.mem.trimRight(u8, clean_url, "/");
+        clean_url = std.mem.trimEnd(u8, clean_url, "/");
 
         const base = std.fs.path.basename(clean_url);
         asset_name = if (base.len == 0 or std.mem.eql(u8, base, ".") or std.mem.eql(u8, base, "/"))
@@ -68,9 +66,7 @@ pub fn runDirectURLInstall(allocator: Allocator, homeDir: []const u8, rawURL: []
     defer allocator.free(asset_name);
     defer allocator.free(dl_path);
 
-    const f = try std.fs.openFileAbsolute(dl_path, .{});
-    defer f.close();
-    const data = try f.readToEndAlloc(allocator, 100 * 1024 * 1024);
+    const data = try std.Io.Dir.cwd().readFileAlloc(paths.getProcessIo(), dl_path, allocator, .limited(100 * 1024 * 1024));
     defer allocator.free(data);
 
     if (fs.isHTMLContent(data)) {
@@ -85,9 +81,9 @@ pub fn runDirectURLInstall(allocator: Allocator, homeDir: []const u8, rawURL: []
 
     if (!contentsFlag and !is_arch) {
         var is_dir = false;
-        if (std.fs.openDirAbsolute(dest_abs, .{})) |d| {
+        if (fs.openDirAbsolute(dest_abs, .{})) |d| {
             var dir = d;
-            dir.close();
+            dir.close(paths.getProcessIo());
             is_dir = true;
         } else |_| {}
 
@@ -133,34 +129,40 @@ pub fn runDirectURLInstall(allocator: Allocator, homeDir: []const u8, rawURL: []
     if (is_arch) {
         const extract_dir = try std.fs.path.join(allocator, &[_][]const u8{ tmp_dir_path, "extracted" });
         defer allocator.free(extract_dir);
-        try std.fs.cwd().makePath(extract_dir);
+        try fs.makePath(extract_dir);
         try fs.extractArchive(allocator, data, asset_name, extract_dir);
 
         var target_extract_path: []const u8 = extract_dir;
+        var allocated_target: ?[]u8 = null;
+        defer if (allocated_target) |t| allocator.free(t);
+
         if (!contentsFlag) {
-            var dir = try std.fs.openDirAbsolute(extract_dir, .{ .iterate = true });
+            var dir = try fs.openDirAbsolute(extract_dir, .{ .iterate = true });
             var it = dir.iterate();
             var count: usize = 0;
-            var single_child_name: ?[]const u8 = null;
+            var single_child_name: ?[]u8 = null;
             var is_child_dir = false;
-            while (try it.next()) |entry| {
+            while (try it.next(paths.getProcessIo())) |entry| {
                 count += 1;
-                single_child_name = entry.name;
+                if (single_child_name) |scn| allocator.free(scn);
+                single_child_name = try allocator.dupe(u8, entry.name);
                 is_child_dir = entry.kind == .directory;
             }
-            dir.close();
+            dir.close(paths.getProcessIo());
 
             if (count == 1 and is_child_dir and single_child_name != null) {
-                target_extract_path = try std.fs.path.join(allocator, &[_][]const u8{ extract_dir, single_child_name.? });
+                allocated_target = try std.fs.path.join(allocator, &[_][]const u8{ extract_dir, single_child_name.? });
+                target_extract_path = allocated_target.?;
             }
+            if (single_child_name) |scn| allocator.free(scn);
         }
 
-        try std.fs.cwd().makePath(dest_abs);
+        try fs.makePath(dest_abs);
 
-        var ext_dir = try std.fs.openDirAbsolute(target_extract_path, .{ .iterate = true });
-        defer ext_dir.close();
+        var ext_dir = try fs.openDirAbsolute(target_extract_path, .{ .iterate = true });
+        defer ext_dir.close(paths.getProcessIo());
         var it = ext_dir.iterate();
-        while (try it.next()) |entry| {
+        while (try it.next(paths.getProcessIo())) |entry| {
             const src_child = try std.fs.path.join(allocator, &[_][]const u8{ target_extract_path, entry.name });
             defer allocator.free(src_child);
             const dst_child = try std.fs.path.join(allocator, &[_][]const u8{ dest_abs, entry.name });

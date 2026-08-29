@@ -1,18 +1,20 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
+const paths = @import("paths/mod.zig");
 
 pub fn downloadWithCurl(allocator: Allocator, url: []const u8, destPath: []const u8) !void {
+    _ = allocator;
     const argv = [_][]const u8{ "curl", "-#", "-fSL", "--proto", "=https,http", url, "-o", destPath };
-    var child = std.process.Child.init(&argv, allocator);
-    child.stdin_behavior = .Ignore;
-    child.stdout_behavior = .Ignore;
-    child.stderr_behavior = .Inherit;
+    var child = try std.process.spawn(paths.getProcessIo(), .{
+        .argv = &argv,
+        .stdin = .ignore,
+        .stdout = .ignore,
+        .stderr = .inherit,
+    });
 
-    try child.spawn();
-
-    const term = try child.wait();
+    const term = try child.wait(paths.getProcessIo());
     switch (term) {
-        .Exited => |code| {
+        .exited => |code| {
             if (code != 0) {
                 return error.CurlDownloadFailed;
             }
@@ -77,32 +79,72 @@ pub fn extractArchive(allocator: Allocator, data: []const u8, name: []const u8, 
     return extractTarWithSystem(allocator, data, destDir);
 }
 
-pub fn extractTarWithSystem(allocator: Allocator, data: []const u8, destDir: []const u8) !void {
-    var tmp_dir_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const tmp_file_path = try std.fmt.bufPrint(&tmp_dir_buf, "/tmp/rice-tar-{d}.tmp", .{std.time.milliTimestamp()});
+pub const max_path_bytes = std.Io.Dir.max_path_bytes;
 
-    const file = try std.fs.createFileAbsolute(tmp_file_path, .{ .mode = 0o600 });
-    try file.writeAll(data);
-    file.close();
-    defer std.fs.deleteFileAbsolute(tmp_file_path) catch {};
+pub fn makePath(p: []const u8) !void {
+    try std.Io.Dir.cwd().createDirPath(paths.getProcessIo(), p);
+}
+
+pub fn openFileAbsolute(p: []const u8, options: std.Io.Dir.OpenFileOptions) !std.Io.File {
+    return std.Io.Dir.cwd().openFile(paths.getProcessIo(), p, options);
+}
+
+pub fn createFileAbsolute(p: []const u8, flags: std.Io.Dir.CreateFileOptions) !std.Io.File {
+    return std.Io.Dir.cwd().createFile(paths.getProcessIo(), p, flags);
+}
+
+pub fn openDirAbsolute(p: []const u8, options: std.Io.Dir.OpenOptions) !std.Io.Dir {
+    return std.Io.Dir.cwd().openDir(paths.getProcessIo(), p, options);
+}
+
+pub fn deleteFileAbsolute(p: []const u8) !void {
+    return std.Io.Dir.cwd().deleteFile(paths.getProcessIo(), p);
+}
+
+pub fn deleteTreeAbsolute(p: []const u8) !void {
+    return std.Io.Dir.cwd().deleteTree(paths.getProcessIo(), p);
+}
+
+pub fn renameAbsolute(old_path: []const u8, new_path: []const u8) !void {
+    return std.Io.Dir.renameAbsolute(old_path, new_path, paths.getProcessIo());
+}
+
+pub fn readFileAlloc(allocator: Allocator, p: []const u8, limit: std.Io.Limit) ![]u8 {
+    return std.Io.Dir.cwd().readFileAlloc(paths.getProcessIo(), p, allocator, limit);
+}
+
+pub fn writeFile(p: []const u8, data: []const u8) !void {
+    return std.Io.Dir.cwd().writeFile(paths.getProcessIo(), .{ .sub_path = p, .data = data });
+}
+
+pub fn getTimestamp() i64 {
+    return @as(i64, @intCast(@divFloor(std.Io.Timestamp.now(paths.getProcessIo(), .real).nanoseconds, 1_000_000_000)));
+}
+
+pub fn getMilliTimestamp() i64 {
+    return @as(i64, @intCast(@divFloor(std.Io.Timestamp.now(paths.getProcessIo(), .real).nanoseconds, 1_000_000)));
+}
+
+pub fn extractTarWithSystem(allocator: Allocator, data: []const u8, destDir: []const u8) !void {
+    var tmp_dir_buf: [max_path_bytes]u8 = undefined;
+    const tmp_file_path = try std.fmt.bufPrint(&tmp_dir_buf, "/tmp/rice-tar-{d}.tmp", .{getMilliTimestamp()});
+
+    const file = try createFileAbsolute(tmp_file_path, .{ .permissions = @enumFromInt(0o600) });
+    try file.writePositionalAll(paths.getProcessIo(), data, 0);
+    file.close(paths.getProcessIo());
+    defer deleteFileAbsolute(tmp_file_path) catch {};
 
     const argv = [_][]const u8{ "tar", "-xf", tmp_file_path, "-C", destDir };
-    var child = std.process.Child.init(&argv, allocator);
-    child.stdin_behavior = .Ignore;
-    child.stdout_behavior = .Pipe;
-    child.stderr_behavior = .Pipe;
+    const res = try std.process.run(allocator, paths.getProcessIo(), .{
+        .argv = &argv,
+    });
+    defer allocator.free(res.stdout);
+    defer allocator.free(res.stderr);
 
-    try child.spawn();
-    const out = try child.stdout.?.readToEndAlloc(allocator, 1024 * 1024);
-    defer allocator.free(out);
-    const err_out = try child.stderr.?.readToEndAlloc(allocator, 1024 * 1024);
-    defer allocator.free(err_out);
-
-    const term = try child.wait();
-    switch (term) {
-        .Exited => |code| {
+    switch (res.term) {
+        .exited => |code| {
             if (code != 0) {
-                std.debug.print("system tar extraction failed: {s}\n", .{err_out});
+                std.debug.print("system tar extraction failed: {s}\n", .{res.stderr});
                 return error.TarExtractionFailed;
             }
         },
@@ -111,43 +153,28 @@ pub fn extractTarWithSystem(allocator: Allocator, data: []const u8, destDir: []c
 }
 
 pub fn extractZipWithSystem(allocator: Allocator, data: []const u8, destDir: []const u8) !void {
-    var tmp_dir_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const tmp_file_path = try std.fmt.bufPrint(&tmp_dir_buf, "/tmp/rice-zip-{d}.zip", .{std.time.milliTimestamp()});
+    var tmp_dir_buf: [max_path_bytes]u8 = undefined;
+    const tmp_file_path = try std.fmt.bufPrint(&tmp_dir_buf, "/tmp/rice-zip-{d}.zip", .{getMilliTimestamp()});
 
-    const file = try std.fs.createFileAbsolute(tmp_file_path, .{ .mode = 0o600 });
-    try file.writeAll(data);
-    file.close();
-    defer std.fs.deleteFileAbsolute(tmp_file_path) catch {};
+    const file = try createFileAbsolute(tmp_file_path, .{ .permissions = @enumFromInt(0o600) });
+    try file.writePositionalAll(paths.getProcessIo(), data, 0);
+    file.close(paths.getProcessIo());
+    defer deleteFileAbsolute(tmp_file_path) catch {};
 
     // Try unzip first, fall back to tar
     var argv = [_][]const u8{ "unzip", "-q", "-o", tmp_file_path, "-d", destDir };
-    var child = std.process.Child.init(&argv, allocator);
-    child.stdin_behavior = .Ignore;
-    child.stdout_behavior = .Pipe;
-    child.stderr_behavior = .Pipe;
-
-    if (child.spawn()) |_| {
-        const out = try child.stdout.?.readToEndAlloc(allocator, 1024 * 1024);
-        defer allocator.free(out);
-        const err_out = try child.stderr.?.readToEndAlloc(allocator, 1024 * 1024);
-        defer allocator.free(err_out);
-        const term = try child.wait();
-        if (term == .Exited and term.Exited == 0) return;
+    if (std.process.run(allocator, paths.getProcessIo(), .{ .argv = &argv })) |res| {
+        defer allocator.free(res.stdout);
+        defer allocator.free(res.stderr);
+        if (res.term == .exited and res.term.exited == 0) return;
     } else |_| {}
 
     // Fallback: tar -xf
     const tar_argv = [_][]const u8{ "tar", "-xf", tmp_file_path, "-C", destDir };
-    var tar_child = std.process.Child.init(&tar_argv, allocator);
-    tar_child.stdin_behavior = .Ignore;
-    tar_child.stdout_behavior = .Pipe;
-    tar_child.stderr_behavior = .Pipe;
-    try tar_child.spawn();
-    const tout = try tar_child.stdout.?.readToEndAlloc(allocator, 1024 * 1024);
-    defer allocator.free(tout);
-    const terr = try tar_child.stderr.?.readToEndAlloc(allocator, 1024 * 1024);
-    defer allocator.free(terr);
-    const term2 = try tar_child.wait();
-    if (term2 != .Exited or term2.Exited != 0) {
+    const res = try std.process.run(allocator, paths.getProcessIo(), .{ .argv = &tar_argv });
+    defer allocator.free(res.stdout);
+    defer allocator.free(res.stderr);
+    if (res.term != .exited or res.term.exited != 0) {
         return error.ZipExtractionFailed;
     }
 }
@@ -155,36 +182,38 @@ pub fn extractZipWithSystem(allocator: Allocator, data: []const u8, destDir: []c
 pub fn copyFile(src: []const u8, dst: []const u8) !void {
     const parent = std.fs.path.dirname(dst);
     if (parent) |p| {
-        try std.fs.cwd().makePath(p);
+        try makePath(p);
     }
 
-    const in_file = try std.fs.openFileAbsolute(src, .{});
-    defer in_file.close();
+    const in_file = try openFileAbsolute(src, .{});
+    defer in_file.close(paths.getProcessIo());
 
-    const stat = try in_file.stat();
-    const mode = stat.mode;
+    const stat = try in_file.stat(paths.getProcessIo());
+    const mode = stat.permissions;
 
-    const out_file = try std.fs.createFileAbsolute(dst, .{ .mode = @as(std.fs.File.Mode, @intCast(mode & 0o777)) });
-    defer out_file.close();
+    const out_file = try createFileAbsolute(dst, .{ .permissions = mode });
+    defer out_file.close(paths.getProcessIo());
 
     var buf: [64 * 1024]u8 = undefined;
+    var offset: u64 = 0;
     while (true) {
-        const n = try in_file.read(&buf);
+        const n = try in_file.readPositional(paths.getProcessIo(), &.{&buf}, offset);
         if (n == 0) break;
-        try out_file.writeAll(buf[0..n]);
+        try out_file.writePositionalAll(paths.getProcessIo(), buf[0..n], offset);
+        offset += n;
     }
 }
 
 pub fn copyPath(allocator: Allocator, src: []const u8, dst: []const u8) !void {
-    const stat = std.fs.openFileAbsolute(src, .{}) catch |err| {
+    const file_stat = openFileAbsolute(src, .{}) catch |err| {
         if (err == error.IsDir) {
             // It's a directory
-            try std.fs.cwd().makePath(dst);
-            var dir = try std.fs.openDirAbsolute(src, .{ .iterate = true });
-            defer dir.close();
+            try makePath(dst);
+            var dir = try openDirAbsolute(src, .{ .iterate = true });
+            defer dir.close(paths.getProcessIo());
 
             var it = dir.iterate();
-            while (try it.next()) |entry| {
+            while (try it.next(paths.getProcessIo())) |entry| {
                 const child_src = try std.fs.path.join(allocator, &[_][]const u8{ src, entry.name });
                 defer allocator.free(child_src);
                 const child_dst = try std.fs.path.join(allocator, &[_][]const u8{ dst, entry.name });
@@ -195,40 +224,40 @@ pub fn copyPath(allocator: Allocator, src: []const u8, dst: []const u8) !void {
         }
         return err;
     };
-    stat.close();
+    file_stat.close(paths.getProcessIo());
     try copyFile(src, dst);
 }
 
 pub fn installPath(allocator: Allocator, src: []const u8, dst: []const u8) !void {
     const parent = std.fs.path.dirname(dst) orelse ".";
-    try std.fs.cwd().makePath(parent);
+    try makePath(parent);
 
     const base_name = std.fs.path.basename(dst);
-    const staging_dir_name = try std.fmt.allocPrint(allocator, "{s}/.rice-tmp-{d}", .{ parent, std.time.milliTimestamp() });
+    const staging_dir_name = try std.fmt.allocPrint(allocator, "{s}/.rice-tmp-{d}", .{ parent, getMilliTimestamp() });
     defer allocator.free(staging_dir_name);
 
-    try std.fs.cwd().makePath(staging_dir_name);
-    defer std.fs.deleteTreeAbsolute(staging_dir_name) catch {};
+    try makePath(staging_dir_name);
+    defer deleteTreeAbsolute(staging_dir_name) catch {};
 
     const staged_dst = try std.fs.path.join(allocator, &[_][]const u8{ staging_dir_name, base_name });
     defer allocator.free(staged_dst);
 
     try copyPath(allocator, src, staged_dst);
 
-    std.fs.deleteTreeAbsolute(dst) catch {};
-    std.fs.deleteFileAbsolute(dst) catch {};
+    deleteTreeAbsolute(dst) catch {};
+    deleteFileAbsolute(dst) catch {};
 
-    std.fs.renameAbsolute(staged_dst, dst) catch {
+    renameAbsolute(staged_dst, dst) catch {
         try copyPath(allocator, staged_dst, dst);
     };
 }
 
 pub fn backupFile(allocator: Allocator, targetPath: []const u8) ![]u8 {
-    _ = std.fs.openFileAbsolute(targetPath, .{}) catch |err| {
+    _ = openFileAbsolute(targetPath, .{}) catch |err| {
         if (err != error.IsDir) return err;
     };
 
-    const ts = std.time.timestamp();
+    const ts = getTimestamp();
     const epoch_seconds = @as(u64, @intCast(ts));
     const epoch_day = epoch_seconds / 86400;
     const day_seconds = epoch_seconds % 86400;
@@ -256,8 +285,8 @@ pub fn backupFile(allocator: Allocator, targetPath: []const u8) ![]u8 {
     var final_backup = base_backup;
 
     var exists = true;
-    if (std.fs.openFileAbsolute(final_backup, .{})) |f| {
-        f.close();
+    if (openFileAbsolute(final_backup, .{})) |f| {
+        f.close(paths.getProcessIo());
     } else |_| {
         exists = false;
     }
@@ -268,8 +297,8 @@ pub fn backupFile(allocator: Allocator, targetPath: []const u8) ![]u8 {
         while (i <= 100) : (i += 1) {
             const cand = try std.fmt.allocPrint(allocator, "{s}.{d}", .{ base_backup, i });
             var cand_exists = true;
-            if (std.fs.openFileAbsolute(cand, .{})) |f| {
-                f.close();
+            if (openFileAbsolute(cand, .{})) |f| {
+                f.close(paths.getProcessIo());
             } else |_| {
                 cand_exists = false;
             }

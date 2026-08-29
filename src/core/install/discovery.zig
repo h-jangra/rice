@@ -1,46 +1,41 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const config = @import("../config.zig");
+const paths = @import("../paths/mod.zig");
 
 pub fn runGitInDir(allocator: Allocator, dir: []const u8, args: []const []const u8) ![]u8 {
     return runGitInDirQuiet(allocator, dir, args, false);
 }
 
 pub fn runGitInDirQuiet(allocator: Allocator, dir: []const u8, args: []const []const u8, quiet: bool) ![]u8 {
-    var cmd_list = std.ArrayList([]const u8).init(allocator);
-    defer cmd_list.deinit();
-    try cmd_list.append("git");
-    for (args) |a| try cmd_list.append(a);
+    var cmd_list: std.ArrayList([]const u8) = .empty;
+    defer cmd_list.deinit(allocator);
+    try cmd_list.append(allocator, "git");
+    for (args) |a| try cmd_list.append(allocator, a);
 
-    var child = std.process.Child.init(cmd_list.items, allocator);
-    child.cwd = dir;
-    child.stdin_behavior = .Ignore;
-    child.stdout_behavior = .Pipe;
-    child.stderr_behavior = .Pipe;
-
-    var env_map = try std.process.getEnvMap(allocator);
+    var env_map = try std.process.Environ.createMap(paths.getProcessEnviron(), allocator);
     defer env_map.deinit();
     try env_map.put("GIT_TERMINAL_PROMPT", "0");
-    child.env_map = &env_map;
 
-    try child.spawn();
-    const stdout = try child.stdout.?.readToEndAlloc(allocator, 10 * 1024 * 1024);
-    errdefer allocator.free(stdout);
-    const stderr = try child.stderr.?.readToEndAlloc(allocator, 10 * 1024 * 1024);
-    defer allocator.free(stderr);
+    const res = try std.process.run(allocator, paths.getProcessIo(), .{
+        .argv = cmd_list.items,
+        .cwd = .{ .path = dir },
+        .environ_map = &env_map,
+    });
+    defer allocator.free(res.stderr);
 
-    const term = try child.wait();
-    if (term != .Exited or term.Exited != 0) {
+    if (res.term != .exited or res.term.exited != 0) {
+        defer allocator.free(res.stdout);
         if (!quiet) {
-            var err_str = std.mem.trim(u8, stderr, " \t\r\n");
-            if (err_str.len == 0) err_str = std.mem.trim(u8, stdout, " \t\r\n");
+            var err_str = std.mem.trim(u8, res.stderr, " \t\r\n");
+            if (err_str.len == 0) err_str = std.mem.trim(u8, res.stdout, " \t\r\n");
             if (err_str.len > 0) {
                 std.debug.print("{s}\n", .{err_str});
             }
         }
         return error.GitInDirFailed;
     }
-    return stdout;
+    return res.stdout;
 }
 
 pub const DiscoveredCandidate = struct {
@@ -54,7 +49,7 @@ pub const DiscoveredCandidate = struct {
 };
 
 pub fn generateDiscoveryCandidates(allocator: Allocator, name: []const u8) !std.ArrayList(DiscoveredCandidate) {
-    var list = std.ArrayList(DiscoveredCandidate).init(allocator);
+    var list: std.ArrayList(DiscoveredCandidate) = .empty;
     const raw = std.mem.trim(u8, name, " \t\r\n");
     if (raw.len == 0) return list;
 
@@ -71,7 +66,7 @@ pub fn generateDiscoveryCandidates(allocator: Allocator, name: []const u8) !std.
         const base = std.fs.path.basename(cleaned);
         if (base.len > 0) cleaned = base;
     }
-    cleaned = std.mem.trimRight(u8, cleaned, "/\\");
+    cleaned = std.mem.trimEnd(u8, cleaned, "/\\");
 
     if (cleaned.len == 0 or std.mem.eql(u8, cleaned, ".") or std.mem.startsWith(u8, cleaned, "..")) {
         return list;
@@ -84,7 +79,7 @@ pub fn generateDiscoveryCandidates(allocator: Allocator, name: []const u8) !std.
         fn add(al: Allocator, cand_list: *std.ArrayList(DiscoveredCandidate), seen_map: *std.StringHashMap(void), rpath: []const u8, dpath: []const u8) !void {
             if (seen_map.contains(rpath)) return;
             try seen_map.put(rpath, {});
-            try cand_list.append(DiscoveredCandidate{
+            try cand_list.append(al, DiscoveredCandidate{
                 .repo_path = try al.dupe(u8, rpath),
                 .dest_config_path = try al.dupe(u8, dpath),
             });
@@ -182,8 +177,8 @@ pub fn resolveRemoteConfig(allocator: Allocator, tmpDir: []const u8, _: []const 
             return error.NoManagedPathsInRemoteRiceIni;
         }
 
-        var matches = std.ArrayList([]const u8).init(allocator);
-        defer matches.deinit();
+        var matches: std.ArrayList([]const u8) = .empty;
+        defer matches.deinit(allocator);
 
         const name_raw = std.mem.trim(u8, name, " \t\r\n");
         var name_clean = name_raw;
@@ -256,7 +251,7 @@ pub fn resolveRemoteConfig(allocator: Allocator, tmpDir: []const u8, _: []const 
             }
 
             if (is_match) {
-                try matches.append(f);
+                try matches.append(allocator, f);
             }
         }
 
@@ -289,18 +284,18 @@ pub fn resolveRemoteConfig(allocator: Allocator, tmpDir: []const u8, _: []const 
     var candidates = try generateDiscoveryCandidates(allocator, name);
     defer {
         for (candidates.items) |*c| c.deinit(allocator);
-        candidates.deinit();
+        candidates.deinit(allocator);
     }
 
-    var matches = std.ArrayList(DiscoveredCandidate).init(allocator);
-    defer matches.deinit();
+    var matches: std.ArrayList(DiscoveredCandidate) = .empty;
+    defer matches.deinit(allocator);
 
     for (candidates.items) |c| {
         const spec = try std.fmt.allocPrint(allocator, "FETCH_HEAD:{s}", .{c.repo_path});
         defer allocator.free(spec);
         if (runGitInDirQuiet(allocator, tmpDir, &[_][]const u8{ "cat-file", "-e", spec }, true)) |out| {
             allocator.free(out);
-            try matches.append(c);
+            try matches.append(allocator, c);
         } else |_| {}
     }
 

@@ -3,6 +3,7 @@ const Allocator = std.mem.Allocator;
 const git_mod = @import("../../core/git/mod.zig");
 const paths = @import("../../core/paths/mod.zig");
 const config = @import("../../core/config.zig");
+const fs = @import("../../core/fs.zig");
 
 pub fn initCmd(allocator: Allocator, git: *git_mod.Git, homeDir: []const u8, args: []const []const u8) !void {
     var remote_url: ?[]const u8 = null;
@@ -84,19 +85,20 @@ pub fn initCmd(allocator: Allocator, git: *git_mod.Git, homeDir: []const u8, arg
                 if (git.getHEADFileContent(".rice.ini")) |ini_bytes| {
                     defer allocator.free(ini_bytes);
                     if (ini_bytes.len > 0) {
-                        const file = std.fs.createFileAbsolute(ini_path, .{ .mode = 0o644 }) catch null;
+                        const file = fs.createFileAbsolute(ini_path, .{ .permissions = @enumFromInt(0o644) }) catch null;
                         if (file) |f| {
-                            f.writeAll(ini_bytes) catch {};
-                            f.close();
+                            f.writePositionalAll(paths.getProcessIo(), ini_bytes, 0) catch {};
+                            f.close(paths.getProcessIo());
                         }
                     }
                 } else |_| {
                     if (git.listRefFiles("HEAD", &[_][]const u8{})) |head_files| {
+                        var hf_mut = head_files;
                         defer {
-                            for (head_files.items) |hf| allocator.free(hf);
-                            head_files.deinit();
+                            for (hf_mut.items) |hf| allocator.free(hf);
+                            hf_mut.deinit(allocator);
                         }
-                        for (head_files.items) |hf| {
+                        for (hf_mut.items) |hf| {
                             if (std.mem.eql(u8, hf, ".rice.ini")) continue;
                             const conf_p = try std.fmt.allocPrint(allocator, "~/{s}", .{hf});
                             defer allocator.free(conf_p);

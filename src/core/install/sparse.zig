@@ -14,8 +14,7 @@ pub fn defaultBranch() []const u8 {
 }
 
 pub fn printInstallUsage() void {
-    const stderr = std.io.getStdErr().writer();
-    stderr.writeAll(
+    std.debug.print(
         \\Usage:
         \\  rice install <name> [--repo <url>] [-b|--branch <branch>] [--contents|-C]
         \\  rice install <source> <destination> [--repo <url>] [-b|--branch <branch>] [--contents|-C]
@@ -35,12 +34,11 @@ pub fn printInstallUsage() void {
         \\  rice install https://github.com/dharmx/walls/tree/main/wave ~/Downloads
         \\  rice install --contents https://github.com/dharmx/walls/tree/main/wave ~/Downloads
         \\
-    ) catch {};
+    , .{});
 }
 
 pub fn printInstallHelp() void {
-    const stdout = std.io.getStdOut().writer();
-    stdout.writeAll(
+    std.debug.print(
         \\Usage:
         \\  rice install <name> [--repo <url>] [-b|--branch <branch>] [--contents|-C]
         \\  rice install <source> <destination> [--repo <url>] [-b|--branch <branch>] [--contents|-C]
@@ -69,19 +67,17 @@ pub fn printInstallHelp() void {
         \\  rice install https://github.com/dharmx/walls/tree/main/wave ~/Downloads
         \\  rice install --contents https://github.com/dharmx/walls/tree/main/wave ~/Downloads
         \\
-    ) catch {};
+    , .{});
 }
 
 fn confirmPrompt(prompt: []const u8) bool {
     std.debug.print("{s}", .{prompt});
-    const stdin = std.io.getStdIn().reader();
     var buf: [128]u8 = undefined;
-    if (stdin.readUntilDelimiterOrEof(&buf, '\n')) |line| {
-        if (line) |l| {
-            const trimmed = std.mem.trim(u8, l, " \t\r\n");
-            return std.ascii.eqlIgnoreCase(trimmed, "y") or std.ascii.eqlIgnoreCase(trimmed, "yes");
-        }
-    } else |_| {}
+    const n = std.Io.File.stdin().readStreaming(paths.getProcessIo(), &.{&buf}) catch return false;
+    if (n > 0) {
+        const trimmed = std.mem.trim(u8, buf[0..n], " \t\r\n");
+        return std.ascii.eqlIgnoreCase(trimmed, "y") or std.ascii.eqlIgnoreCase(trimmed, "yes");
+    }
     return false;
 }
 
@@ -89,8 +85,8 @@ pub fn installDotfiles(allocator: Allocator, git: *git_mod.Git, homeDir: []const
     var repo_flag: ?[]const u8 = null;
     var branch_flag: ?[]const u8 = null;
     var contents_flag = false;
-    var positional = std.ArrayList([]const u8).init(allocator);
-    defer positional.deinit();
+    var positional: std.ArrayList([]const u8) = .empty;
+    defer positional.deinit(allocator);
 
     var i: usize = 0;
     while (i < args.len) : (i += 1) {
@@ -125,7 +121,7 @@ pub fn installDotfiles(allocator: Allocator, git: *git_mod.Git, homeDir: []const
             printInstallUsage();
             return error.UnknownFlag;
         } else {
-            try positional.append(arg);
+            try positional.append(allocator, arg);
         }
     }
 
@@ -265,10 +261,10 @@ pub fn installDotfiles(allocator: Allocator, git: *git_mod.Git, homeDir: []const
         }
     }
 
-    const tmp_dir_path = try std.fmt.allocPrint(allocator, "/tmp/rice-install-{d}", .{std.time.milliTimestamp()});
+    const tmp_dir_path = try std.fmt.allocPrint(allocator, "/tmp/rice-install-{d}", .{fs.getMilliTimestamp()});
     defer allocator.free(tmp_dir_path);
-    try std.fs.cwd().makePath(tmp_dir_path);
-    defer std.fs.deleteTreeAbsolute(tmp_dir_path) catch {};
+    try fs.makePath(tmp_dir_path);
+    defer fs.deleteTreeAbsolute(tmp_dir_path) catch {};
 
     _ = try discovery.runGitInDir(allocator, tmp_dir_path, &[_][]const u8{"init"});
     _ = try discovery.runGitInDir(allocator, tmp_dir_path, &[_][]const u8{ "remote", "add", "origin", repo_url.? });
@@ -298,9 +294,9 @@ pub fn installDotfiles(allocator: Allocator, git: *git_mod.Git, homeDir: []const
     defer allocator.free(downloaded_path);
 
     var is_dir = false;
-    if (std.fs.openDirAbsolute(downloaded_path, .{})) |d| {
+    if (fs.openDirAbsolute(downloaded_path, .{})) |d| {
         var dir = d;
-        dir.close();
+        dir.close(paths.getProcessIo());
         is_dir = true;
     } else |_| {}
 
@@ -310,13 +306,13 @@ pub fn installDotfiles(allocator: Allocator, git: *git_mod.Git, homeDir: []const
     }
 
     var has_conflict = false;
-    if (std.fs.openFileAbsolute(dest_path, .{})) |f| {
-        f.close();
+    if (fs.openFileAbsolute(dest_path, .{})) |f| {
+        f.close(paths.getProcessIo());
         has_conflict = true;
     } else |_| {
-        if (std.fs.openDirAbsolute(dest_path, .{})) |d| {
+        if (fs.openDirAbsolute(dest_path, .{})) |d| {
             var dir = d;
-            dir.close();
+            dir.close(paths.getProcessIo());
             has_conflict = true;
         } else |_| {}
     }
@@ -331,11 +327,11 @@ pub fn installDotfiles(allocator: Allocator, git: *git_mod.Git, homeDir: []const
     }
 
     if (contents_flag) {
-        try std.fs.cwd().makePath(dest_path);
-        var dir = try std.fs.openDirAbsolute(downloaded_path, .{ .iterate = true });
-        defer dir.close();
+        try fs.makePath(dest_path);
+        var dir = try fs.openDirAbsolute(downloaded_path, .{ .iterate = true });
+        defer dir.close(paths.getProcessIo());
         var it = dir.iterate();
-        while (try it.next()) |entry| {
+        while (try it.next(paths.getProcessIo())) |entry| {
             const sc = try std.fs.path.join(allocator, &[_][]const u8{ downloaded_path, entry.name });
             defer allocator.free(sc);
             const dc = try std.fs.path.join(allocator, &[_][]const u8{ dest_path, entry.name });

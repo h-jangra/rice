@@ -1,5 +1,6 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
+const paths = @import("paths/mod.zig");
 
 pub const Config = struct {
     allocator: Allocator,
@@ -13,7 +14,7 @@ pub const Config = struct {
             .allocator = allocator,
             .remote = null,
             .branch = null,
-            .files = std.ArrayList([]const u8).init(allocator),
+            .files = .empty,
             .binaries = std.StringHashMap([]const u8).init(allocator),
         };
     }
@@ -22,7 +23,7 @@ pub const Config = struct {
         if (self.remote) |r| self.allocator.free(r);
         if (self.branch) |b| self.allocator.free(b);
         for (self.files.items) |f| self.allocator.free(f);
-        self.files.deinit();
+        self.files.deinit(self.allocator);
 
         var it = self.binaries.iterator();
         while (it.next()) |entry| {
@@ -46,7 +47,7 @@ pub const Config = struct {
             }
         }
 
-        try self.files.append(norm);
+        try self.files.append(self.allocator, norm);
         return true;
     }
 
@@ -119,8 +120,8 @@ pub fn normalizeConfigFileEntry(allocator: Allocator, path: []const u8) ![]u8 {
         return try allocator.dupe(u8, "");
     }
 
-    var parts = std.ArrayList([]const u8).init(allocator);
-    defer parts.deinit();
+    var parts: std.ArrayList([]const u8) = .empty;
+    defer parts.deinit(allocator);
 
     var it = std.mem.splitAny(u8, norm_path, "/\\");
     while (it.next()) |part| {
@@ -132,7 +133,7 @@ pub fn normalizeConfigFileEntry(allocator: Allocator, path: []const u8) ![]u8 {
                 return try allocator.dupe(u8, "");
             }
         } else {
-            try parts.append(part);
+            try parts.append(allocator, part);
         }
     }
 
@@ -161,10 +162,10 @@ pub fn normalizeConfigFileEntry(allocator: Allocator, path: []const u8) ![]u8 {
 }
 
 pub fn loadConfig(allocator: Allocator, path: []const u8) !*Config {
-    const file = try std.fs.openFileAbsolute(path, .{});
-    defer file.close();
+    const file = try std.Io.Dir.cwd().openFile(paths.getProcessIo(), path, .{});
+    defer file.close(paths.getProcessIo());
 
-    const content = try file.readToEndAlloc(allocator, 10 * 1024 * 1024);
+    const content = try std.Io.Dir.cwd().readFileAlloc(paths.getProcessIo(), path, allocator, .limited(10 * 1024 * 1024));
     defer allocator.free(content);
 
     const cfg = try allocator.create(Config);
@@ -222,38 +223,43 @@ pub fn loadConfig(allocator: Allocator, path: []const u8) !*Config {
 }
 
 pub fn saveConfig(allocator: Allocator, path: []const u8, cfg: *const Config) !void {
-    var buffer = std.ArrayList(u8).init(allocator);
-    defer buffer.deinit();
-    const writer = buffer.writer();
+    var buffer: std.ArrayList(u8) = .empty;
+    defer buffer.deinit(allocator);
 
     var has_header = false;
     if (cfg.remote) |r| {
-        try writer.print("repo = {s}\n", .{r});
+        const line = try std.fmt.allocPrint(allocator, "repo = {s}\n", .{r});
+        defer allocator.free(line);
+        try buffer.appendSlice(allocator, line);
         has_header = true;
     }
     if (cfg.branch) |b| {
-        try writer.print("branch = {s}\n", .{b});
+        const line = try std.fmt.allocPrint(allocator, "branch = {s}\n", .{b});
+        defer allocator.free(line);
+        try buffer.appendSlice(allocator, line);
         has_header = true;
     }
     if (has_header) {
-        try writer.writeAll("\n");
+        try buffer.appendSlice(allocator, "\n");
     }
 
-    try writer.writeAll("[files]\n");
+    try buffer.appendSlice(allocator, "[files]\n");
     for (cfg.files.items) |f| {
-        try writer.print("{s}\n", .{f});
+        const line = try std.fmt.allocPrint(allocator, "{s}\n", .{f});
+        defer allocator.free(line);
+        try buffer.appendSlice(allocator, line);
     }
 
     if (cfg.binaries.count() > 0) {
-        if (cfg.files.items.len > 0) try writer.writeAll("\n");
-        try writer.writeAll("[binaries]\n");
+        if (cfg.files.items.len > 0) try buffer.appendSlice(allocator, "\n");
+        try buffer.appendSlice(allocator, "[binaries]\n");
 
-        var keys = std.ArrayList([]const u8).init(allocator);
-        defer keys.deinit();
+        var keys: std.ArrayList([]const u8) = .empty;
+        defer keys.deinit(allocator);
 
         var it = cfg.binaries.iterator();
         while (it.next()) |entry| {
-            try keys.append(entry.key_ptr.*);
+            try keys.append(allocator, entry.key_ptr.*);
         }
 
         std.mem.sort([]const u8, keys.items, {}, struct {
@@ -264,11 +270,13 @@ pub fn saveConfig(allocator: Allocator, path: []const u8, cfg: *const Config) !v
 
         for (keys.items) |k| {
             const v = cfg.binaries.get(k).?;
-            try writer.print("{s} = {s}\n", .{ k, v });
+            const line = try std.fmt.allocPrint(allocator, "{s} = {s}\n", .{ k, v });
+            defer allocator.free(line);
+            try buffer.appendSlice(allocator, line);
         }
     }
 
-    const file = try std.fs.createFileAbsolute(path, .{ .truncate = true, .mode = 0o644 });
-    defer file.close();
-    try file.writeAll(buffer.items);
+    const file = try std.Io.Dir.cwd().createFile(paths.getProcessIo(), path, .{ .permissions = @enumFromInt(0o644) });
+    defer file.close(paths.getProcessIo());
+    try file.writePositionalAll(paths.getProcessIo(), buffer.items, 0);
 }

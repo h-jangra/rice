@@ -6,8 +6,8 @@ const bin_cmd = @import("bin_cmd.zig");
 
 pub fn installCmd(allocator: Allocator, git: *git_mod.Git, homeDir: []const u8, args: []const []const u8) !void {
     var bin_mode = false;
-    var bin_args = std.ArrayList([]const u8).init(allocator);
-    defer bin_args.deinit();
+    var bin_args: std.ArrayList([]const u8) = .empty;
+    defer bin_args.deinit(allocator);
 
     for (args) |arg| {
         if (std.mem.eql(u8, arg, "--bin") or std.mem.eql(u8, arg, "--bins")) {
@@ -15,13 +15,13 @@ pub fn installCmd(allocator: Allocator, git: *git_mod.Git, homeDir: []const u8, 
         } else if (std.mem.startsWith(u8, arg, "--bin=")) {
             bin_mode = true;
             const val = arg["--bin=".len..];
-            if (val.len > 0) try bin_args.append(val);
+            if (val.len > 0) try bin_args.append(allocator, val);
         } else if (std.mem.startsWith(u8, arg, "--bins=")) {
             bin_mode = true;
             const val = arg["--bins=".len..];
-            if (val.len > 0) try bin_args.append(val);
+            if (val.len > 0) try bin_args.append(allocator, val);
         } else {
-            try bin_args.append(arg);
+            try bin_args.append(allocator, arg);
         }
     }
 

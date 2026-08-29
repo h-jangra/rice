@@ -5,10 +5,10 @@ const paths = @import("../paths/mod.zig");
 const config = @import("../config.zig");
 const bin_mod = @import("../bin/mod.zig");
 const sparse = @import("sparse.zig");
+const fs = @import("../fs.zig");
 
 pub fn printBinHelp() void {
-    const stdout = std.io.getStdOut().writer();
-    stdout.writeAll(
+    std.debug.print(
         \\Usage:
         \\  rice bin [install] <source> [--tag <tag>] [--name <name>] [--save]
         \\  rice bin list
@@ -28,7 +28,7 @@ pub fn printBinHelp() void {
         \\  rice bin list
         \\  rice bin remove bat
         \\
-    ) catch {};
+    , .{});
 }
 
 pub fn runBinInstall(allocator: Allocator, homeDir: []const u8, args: []const []const u8) !void {
@@ -102,12 +102,12 @@ pub fn runBinList(allocator: Allocator, homeDir: []const u8) !void {
         return;
     }
 
-    var keys = std.ArrayList([]const u8).init(allocator);
-    defer keys.deinit();
+    var keys: std.ArrayList([]const u8) = .empty;
+    defer keys.deinit(allocator);
 
     var it = cfg.binaries.iterator();
     while (it.next()) |entry| {
-        try keys.append(entry.key_ptr.*);
+        try keys.append(allocator, entry.key_ptr.*);
     }
 
     std.mem.sort([]const u8, keys.items, {}, struct {
@@ -124,8 +124,8 @@ pub fn runBinList(allocator: Allocator, homeDir: []const u8) !void {
         const bin_p = try std.fs.path.join(allocator, &[_][]const u8{ bin_dir, name });
         defer allocator.free(bin_p);
 
-        if (std.fs.openFileAbsolute(bin_p, .{})) |f| {
-            f.close();
+        if (fs.openFileAbsolute(bin_p, .{})) |f| {
+            f.close(paths.getProcessIo());
             status = "installed";
         } else |_| {}
 
@@ -150,8 +150,8 @@ pub fn runBinRemove(allocator: Allocator, homeDir: []const u8, args: []const []c
     defer allocator.free(target_file);
 
     var exists = false;
-    if (std.fs.openFileAbsolute(target_file, .{})) |f| {
-        f.close();
+    if (fs.openFileAbsolute(target_file, .{})) |f| {
+        f.close(paths.getProcessIo());
         exists = true;
     } else |_| {}
 
@@ -160,7 +160,7 @@ pub fn runBinRemove(allocator: Allocator, homeDir: []const u8, args: []const []c
         return error.BinaryNotFound;
     }
 
-    try std.fs.deleteFileAbsolute(target_file);
+    try fs.deleteFileAbsolute(target_file);
     std.debug.print("Removed '{s}' from {s}\n", .{ name, bin_dir });
 }
 

@@ -3,6 +3,7 @@ const Allocator = std.mem.Allocator;
 const git_mod = @import("../../core/git/mod.zig");
 const paths = @import("../../core/paths/mod.zig");
 const config = @import("../../core/config.zig");
+const fs = @import("../../core/fs.zig");
 
 pub fn editCmd(allocator: Allocator, homeDir: []const u8, args: []const []const u8) !void {
     if (args.len > 0) {
@@ -14,8 +15,8 @@ pub fn editCmd(allocator: Allocator, homeDir: []const u8, args: []const []const 
     defer allocator.free(ini_path);
 
     var exists = false;
-    if (std.fs.openFileAbsolute(ini_path, .{})) |f| {
-        f.close();
+    if (fs.openFileAbsolute(ini_path, .{})) |f| {
+        f.close(paths.getProcessIo());
         exists = true;
     } else |_| {}
 
@@ -28,7 +29,7 @@ pub fn editCmd(allocator: Allocator, homeDir: []const u8, args: []const []const 
     var allocated_ed: ?[]u8 = null;
     defer if (allocated_ed) |ed| allocator.free(ed);
 
-    if (std.process.getEnvVarOwned(allocator, "EDITOR")) |ed| {
+    if (std.process.Environ.getAlloc(paths.getProcessEnviron(), allocator, "EDITOR")) |ed| {
         allocated_ed = ed;
         if (std.mem.trim(u8, ed, " \t\r\n").len > 0) {
             editor_str = std.mem.trim(u8, ed, " \t\r\n");
@@ -36,25 +37,26 @@ pub fn editCmd(allocator: Allocator, homeDir: []const u8, args: []const []const 
     } else |_| {}
 
     var it = std.mem.splitScalar(u8, editor_str, ' ');
-    var cmd_list = std.ArrayList([]const u8).init(allocator);
-    defer cmd_list.deinit();
+    var cmd_list: std.ArrayList([]const u8) = .empty;
+    defer cmd_list.deinit(allocator);
 
     while (it.next()) |part| {
-        if (part.len > 0) try cmd_list.append(part);
+        if (part.len > 0) try cmd_list.append(allocator, part);
     }
     if (cmd_list.items.len == 0) {
-        try cmd_list.append("vi");
+        try cmd_list.append(allocator, "vi");
     }
-    try cmd_list.append(ini_path);
+    try cmd_list.append(allocator, ini_path);
 
-    var child = std.process.Child.init(cmd_list.items, allocator);
-    child.stdin_behavior = .Inherit;
-    child.stdout_behavior = .Inherit;
-    child.stderr_behavior = .Inherit;
-    try child.spawn();
+    var child = try std.process.spawn(paths.getProcessIo(), .{
+        .argv = cmd_list.items,
+        .stdin = .inherit,
+        .stdout = .inherit,
+        .stderr = .inherit,
+    });
 
-    const term = try child.wait();
-    if (term != .Exited or term.Exited != 0) {
+    const term = try child.wait(paths.getProcessIo());
+    if (term != .exited or term.exited != 0) {
         return error.EditorFailed;
     }
 }
@@ -72,9 +74,9 @@ pub fn doctorCmd(allocator: Allocator, git: *git_mod.Git, homeDir: []const u8) !
     }
 
     var bare_exists = false;
-    if (std.fs.openDirAbsolute(git.rice_dir, .{})) |d| {
+    if (fs.openDirAbsolute(git.rice_dir, .{})) |d| {
         var dir = d;
-        dir.close();
+        dir.close(paths.getProcessIo());
         bare_exists = true;
     } else |_| {}
 

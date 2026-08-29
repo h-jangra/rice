@@ -11,8 +11,8 @@ pub fn toSlashOwned(allocator: Allocator, p: []const u8) ![]u8 {
 
 pub fn cleanPath(allocator: Allocator, p: []const u8) ![]u8 {
     const is_abs = std.fs.path.isAbsolute(p);
-    var parts = std.ArrayList([]const u8).init(allocator);
-    defer parts.deinit();
+    var parts: std.ArrayList([]const u8) = .empty;
+    defer parts.deinit(allocator);
 
     var it = std.mem.splitAny(u8, p, "/\\");
     while (it.next()) |part| {
@@ -21,10 +21,10 @@ pub fn cleanPath(allocator: Allocator, p: []const u8) ![]u8 {
             if (parts.items.len > 0 and !std.mem.eql(u8, parts.items[parts.items.len - 1], "..")) {
                 _ = parts.pop();
             } else if (!is_abs) {
-                try parts.append("..");
+                try parts.append(allocator, "..");
             }
         } else {
-            try parts.append(part);
+            try parts.append(allocator, part);
         }
     }
 

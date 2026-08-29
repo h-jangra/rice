@@ -1,5 +1,7 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
+const fs = @import("../fs.zig");
+const paths = @import("../paths/mod.zig");
 
 pub fn isExecutableBinary(data: []const u8) bool {
     if (data.len >= 4 and std.mem.eql(u8, data[0..4], "\x7fELF")) return true;
@@ -92,27 +94,45 @@ pub fn matchCandidateName(candPath: []const u8, target: []const u8) bool {
     return false;
 }
 
-pub fn findExecutable(allocator: Allocator, extractDir: []const u8, customName: []const u8, fallbackName: []const u8) ![]u8 {
-    var candidates = std.ArrayList([]u8).init(allocator);
-    defer {
-        for (candidates.items) |c| allocator.free(c);
-        candidates.deinit();
-    }
+fn collectCandidates(allocator: Allocator, root_dir: []const u8, rel_sub_path: []const u8, candidates: *std.ArrayList([]u8)) !void {
+    const full_dir = if (rel_sub_path.len == 0)
+        try allocator.dupe(u8, root_dir)
+    else
+        try std.fs.path.join(allocator, &[_][]const u8{ root_dir, rel_sub_path });
+    defer allocator.free(full_dir);
 
-    var dir = try std.fs.openDirAbsolute(extractDir, .{ .iterate = true });
-    defer dir.close();
+    var dir = fs.openDirAbsolute(full_dir, .{ .iterate = true }) catch return;
+    defer dir.close(paths.getProcessIo());
 
-    var walker = try dir.walk(allocator);
-    defer walker.deinit();
+    var it = dir.iterate();
+    while (try it.next(paths.getProcessIo())) |entry| {
+        const child_rel = if (rel_sub_path.len == 0)
+            try allocator.dupe(u8, entry.name)
+        else
+            try std.fs.path.join(allocator, &[_][]const u8{ rel_sub_path, entry.name });
+        defer allocator.free(child_rel);
 
-    while (try walker.next()) |entry| {
         const is_dir = entry.kind == .directory;
-        const base = std.fs.path.basename(entry.path);
-        if (!isIgnoredCandidate(entry.path, is_dir, base)) {
-            const full = try std.fs.path.join(allocator, &[_][]const u8{ extractDir, entry.path });
-            try candidates.append(full);
+        if (is_dir) {
+            try collectCandidates(allocator, root_dir, child_rel, candidates);
+        } else {
+            const base = std.fs.path.basename(child_rel);
+            if (!isIgnoredCandidate(child_rel, false, base)) {
+                const full = try std.fs.path.join(allocator, &[_][]const u8{ root_dir, child_rel });
+                try candidates.append(allocator, full);
+            }
         }
     }
+}
+
+pub fn findExecutable(allocator: Allocator, extractDir: []const u8, customName: []const u8, fallbackName: []const u8) ![]u8 {
+    var candidates: std.ArrayList([]u8) = .empty;
+    defer {
+        for (candidates.items) |c| allocator.free(c);
+        candidates.deinit(allocator);
+    }
+
+    try collectCandidates(allocator, extractDir, "", &candidates);
 
     if (candidates.items.len == 0) {
         return error.NoExecutableFoundInArchive;
@@ -134,28 +154,28 @@ pub fn findExecutable(allocator: Allocator, extractDir: []const u8, customName: 
         }
     }
 
-    var exec_candidates = std.ArrayList([]u8).init(allocator);
-    defer exec_candidates.deinit();
+    var exec_candidates: std.ArrayList([]u8) = .empty;
+    defer exec_candidates.deinit(allocator);
 
     for (candidates.items) |c| {
         var is_exec = false;
-        if (std.fs.openFileAbsolute(c, .{})) |f| {
-            defer f.close();
-            if (f.stat()) |st| {
-                if ((st.mode & 0o111) != 0) {
+        if (fs.openFileAbsolute(c, .{})) |f| {
+            defer f.close(paths.getProcessIo());
+            if (f.stat(paths.getProcessIo())) |st| {
+                if ((@intFromEnum(st.permissions) & 0o111) != 0) {
                     is_exec = true;
                 }
             } else |_| {}
             if (!is_exec) {
                 var header: [512]u8 = undefined;
-                const n = f.read(&header) catch 0;
+                const n = f.readPositional(paths.getProcessIo(), &.{&header}, 0) catch 0;
                 if (isExecutableBinary(header[0..n])) {
                     is_exec = true;
                 }
             }
         } else |_| {}
         if (is_exec) {
-            try exec_candidates.append(c);
+            try exec_candidates.append(allocator, c);
         }
     }
 
@@ -173,16 +193,21 @@ pub fn findExecutable(allocator: Allocator, extractDir: []const u8, customName: 
 }
 
 pub fn formatBinaryTree(allocator: Allocator, archiveName: []const u8, paths_list: []const []const u8) ![]u8 {
-    var buf = std.ArrayList(u8).init(allocator);
-    const writer = buf.writer();
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(allocator);
 
-    try writer.print("  {s}\n", .{archiveName});
+    const first_line = try std.fmt.allocPrint(allocator, "  {s}\n", .{archiveName});
+    defer allocator.free(first_line);
+    try buf.appendSlice(allocator, first_line);
+
     for (paths_list, 0..) |p, i| {
         const is_last = (i + 1 == paths_list.len);
         const connector = if (is_last) "└── " else "├── ";
-        try writer.print("  {s}[{d}] {s}\n", .{ connector, i + 1, p });
+        const item_line = try std.fmt.allocPrint(allocator, "  {s}[{d}] {s}\n", .{ connector, i + 1, p });
+        defer allocator.free(item_line);
+        try buf.appendSlice(allocator, item_line);
     }
-    return buf.toOwnedSlice();
+    return try buf.toOwnedSlice(allocator);
 }
 
 pub fn promptBinarySelection(allocator: Allocator, archiveName: []const u8, binaries: []const []const u8) ![]const u8 {
@@ -194,12 +219,12 @@ pub fn promptBinarySelection(allocator: Allocator, archiveName: []const u8, bina
 
     std.debug.print("\nFound {d} executables in {s}:\n\n{s}\n", .{ binaries.len, archiveName, tree });
 
-    const stdin = std.io.getStdIn().reader();
     while (true) {
         std.debug.print("Select binary to install [1-{d}]: ", .{binaries.len});
         var line_buf: [128]u8 = undefined;
-        if (try stdin.readUntilDelimiterOrEof(&line_buf, '\n')) |line| {
-            const trimmed = std.mem.trim(u8, line, " \t\r\n");
+        const n = std.Io.File.stdin().readStreaming(paths.getProcessIo(), &.{&line_buf}) catch return error.ReadFailed;
+        if (n > 0) {
+            const trimmed = std.mem.trim(u8, line_buf[0..n], " \t\r\n");
             const choice = std.fmt.parseInt(usize, trimmed, 10) catch {
                 std.debug.print("Invalid selection \"{s}\", please enter a number between 1 and {d}\n", .{ trimmed, binaries.len });
                 continue;

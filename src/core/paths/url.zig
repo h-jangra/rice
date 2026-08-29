@@ -107,12 +107,12 @@ pub fn parseGitHubURL(allocator: Allocator, rawURL: []const u8) !*GitHubURLInfo 
     if (path_part == null) return error.UnsupportedURL;
 
     const trimmed_parts = std.mem.trim(u8, path_part.?, "/");
-    var parts = std.ArrayList([]const u8).init(allocator);
-    defer parts.deinit();
+    var parts: std.ArrayList([]const u8) = .empty;
+    defer parts.deinit(allocator);
 
     var it = std.mem.splitScalar(u8, trimmed_parts, '/');
     while (it.next()) |p| {
-        if (p.len > 0) try parts.append(p);
+        if (p.len > 0) try parts.append(allocator, p);
     }
 
     if (parts.items.len < 5) return error.InvalidGitHubURL;
@@ -134,12 +134,12 @@ pub fn parseGitHubURL(allocator: Allocator, rawURL: []const u8) !*GitHubURLInfo 
     else
         return error.UnsupportedGitHubURL;
 
-    var path_buf = std.ArrayList(u8).init(allocator);
-    defer path_buf.deinit();
+    var path_buf: std.ArrayList(u8) = .empty;
+    defer path_buf.deinit(allocator);
 
     for (parts.items[4..], 0..) |part, idx| {
-        try path_buf.appendSlice(part);
-        if (idx + 1 < parts.items[4..].len) try path_buf.append('/');
+        try path_buf.appendSlice(allocator, part);
+        if (idx + 1 < parts.items[4..].len) try path_buf.append(allocator, '/');
     }
 
     const clean_source = try validate.validateSourcePath(allocator, path_buf.items);

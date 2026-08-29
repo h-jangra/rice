@@ -6,6 +6,10 @@ pub const url = @import("url.zig");
 pub const toSlashOwned = clean.toSlashOwned;
 pub const cleanPath = clean.cleanPath;
 
+pub const setProcessIo = resolve.setProcessIo;
+pub const setProcessEnviron = resolve.setProcessEnviron;
+pub const getProcessIo = resolve.getProcessIo;
+pub const getProcessEnviron = resolve.getProcessEnviron;
 pub const getHomeDir = resolve.getHomeDir;
 pub const getRiceDir = resolve.getRiceDir;
 pub const getRiceIniPath = resolve.getRiceIniPath;

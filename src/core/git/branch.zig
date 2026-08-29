@@ -89,9 +89,9 @@ pub fn switchBranch(allocator: Allocator, rice_dir: []const u8, home_dir: []cons
 }
 
 pub fn branchList(allocator: Allocator, rice_dir: []const u8, home_dir: []const u8, args: []const []const u8) ![]u8 {
-    var cmd_list = std.ArrayList([]const u8).init(allocator);
-    defer cmd_list.deinit();
-    try cmd_list.append("branch");
-    for (args) |a| try cmd_list.append(a);
+    var cmd_list: std.ArrayList([]const u8) = .empty;
+    defer cmd_list.deinit(allocator);
+    try cmd_list.append(allocator, "branch");
+    for (args) |a| try cmd_list.append(allocator, a);
     return exec.execOutput(allocator, rice_dir, home_dir, cmd_list.items, true);
 }

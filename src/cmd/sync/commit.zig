@@ -4,6 +4,7 @@ const git_mod = @import("../../core/git/mod.zig");
 const paths = @import("../../core/paths/mod.zig");
 const config = @import("../../core/config.zig");
 const repo = @import("../repo/mod.zig");
+const fs = @import("../../core/fs.zig");
 
 pub fn parseCommitMessage(allocator: Allocator, args: []const []const u8) !?[]u8 {
     if (args.len == 0) return null;
@@ -14,58 +15,52 @@ pub fn parseCommitMessage(allocator: Allocator, args: []const []const u8) !?[]u8
             std.debug.print("Error: commit message required after {s}\n", .{first});
             return error.CommitMessageRequired;
         }
-        var buf = std.ArrayList(u8).init(allocator);
+        var buf: std.ArrayList(u8) = .empty;
+        defer buf.deinit(allocator);
         for (args[1..], 0..) |a, idx| {
-            try buf.appendSlice(a);
-            if (idx + 1 < args[1..].len) try buf.append(' ');
+            try buf.appendSlice(allocator, a);
+            if (idx + 1 < args[1..].len) try buf.append(allocator, ' ');
         }
         const trimmed = std.mem.trim(u8, buf.items, " \t\r\n");
         if (trimmed.len == 0) {
-            buf.deinit();
             return error.CommitMessageEmpty;
         }
-        const res = try allocator.dupe(u8, trimmed);
-        buf.deinit();
-        return res;
+        return try allocator.dupe(u8, trimmed);
     }
 
     const prefixes = [_][]const u8{ "--message=", "-m=" };
     for (prefixes) |p| {
         if (std.mem.startsWith(u8, first, p)) {
             const msg = first[p.len..];
-            var buf = std.ArrayList(u8).init(allocator);
-            try buf.appendSlice(msg);
+            var buf: std.ArrayList(u8) = .empty;
+            defer buf.deinit(allocator);
+            try buf.appendSlice(allocator, msg);
             if (args.len > 1) {
-                try buf.append(' ');
+                try buf.append(allocator, ' ');
                 for (args[1..], 0..) |a, idx| {
-                    try buf.appendSlice(a);
-                    if (idx + 1 < args[1..].len) try buf.append(' ');
+                    try buf.appendSlice(allocator, a);
+                    if (idx + 1 < args[1..].len) try buf.append(allocator, ' ');
                 }
             }
             const trimmed = std.mem.trim(u8, buf.items, " \t\r\n");
             if (trimmed.len == 0) {
-                buf.deinit();
                 return error.CommitMessageEmpty;
             }
-            const res = try allocator.dupe(u8, trimmed);
-            buf.deinit();
-            return res;
+            return try allocator.dupe(u8, trimmed);
         }
     }
 
-    var buf = std.ArrayList(u8).init(allocator);
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(allocator);
     for (args, 0..) |a, idx| {
-        try buf.appendSlice(a);
-        if (idx + 1 < args.len) try buf.append(' ');
+        try buf.appendSlice(allocator, a);
+        if (idx + 1 < args.len) try buf.append(allocator, ' ');
     }
     const trimmed = std.mem.trim(u8, buf.items, " \t\r\n");
     if (trimmed.len == 0) {
-        buf.deinit();
         return null;
     }
-    const res = try allocator.dupe(u8, trimmed);
-    buf.deinit();
-    return res;
+    return try allocator.dupe(u8, trimmed);
 }
 
 pub fn stageTrackedFiles(allocator: Allocator, git: *git_mod.Git, homeDir: []const u8, cfg: ?*const config.Config) !void {
@@ -79,13 +74,13 @@ pub fn stageTrackedFiles(allocator: Allocator, git: *git_mod.Git, homeDir: []con
                 defer allocator.free(git_p);
 
                 var exists = false;
-                if (std.fs.openFileAbsolute(abs_p, .{})) |file| {
-                    file.close();
+                if (fs.openFileAbsolute(abs_p, .{})) |file| {
+                    file.close(paths.getProcessIo());
                     exists = true;
                 } else |_| {
-                    if (std.fs.openDirAbsolute(abs_p, .{})) |d| {
+                    if (fs.openDirAbsolute(abs_p, .{})) |d| {
                         var dir = d;
-                        dir.close();
+                        dir.close(paths.getProcessIo());
                         exists = true;
                     } else |_| {}
                 }
@@ -106,11 +101,11 @@ pub fn stageTrackedFiles(allocator: Allocator, git: *git_mod.Git, homeDir: []con
     var all_git_files = git.getAllGitTrackedFiles() catch return;
     defer {
         for (all_git_files.items) |gf| allocator.free(gf);
-        all_git_files.deinit();
+        all_git_files.deinit(allocator);
     }
 
-    var to_untrack = std.ArrayList([]const u8).init(allocator);
-    defer to_untrack.deinit();
+    var to_untrack: std.ArrayList([]const u8) = .empty;
+    defer to_untrack.deinit(allocator);
 
     for (all_git_files.items) |gf| {
         if (std.mem.eql(u8, gf, ".rice.ini")) continue;
@@ -127,7 +122,7 @@ pub fn stageTrackedFiles(allocator: Allocator, git: *git_mod.Git, homeDir: []con
         }
 
         if (!covered) {
-            try to_untrack.append(gf);
+            try to_untrack.append(allocator, gf);
         }
     }
 
@@ -152,14 +147,14 @@ pub fn generateAutoCommitMessage(allocator: Allocator, git: *git_mod.Git, homeDi
 
     if (diff_out.len == 0) return try allocator.dupe(u8, "update dotfiles");
 
-    var changes = std.ArrayList(FileChange).init(allocator);
+    var changes: std.ArrayList(FileChange) = .empty;
     defer {
         for (changes.items) |*c| c.deinit(allocator);
-        changes.deinit();
+        changes.deinit(allocator);
     }
 
-    var non_ini_changes = std.ArrayList(FileChange).init(allocator);
-    defer non_ini_changes.deinit();
+    var non_ini_changes: std.ArrayList(FileChange) = .empty;
+    defer non_ini_changes.deinit(allocator);
 
     var lines = std.mem.splitScalar(u8, diff_out, '\n');
     while (lines.next()) |line| {
@@ -177,9 +172,9 @@ pub fn generateAutoCommitMessage(allocator: Allocator, git: *git_mod.Git, homeDi
             .status = try allocator.dupe(u8, st.?),
             .path = try allocator.dupe(u8, fp.?),
         };
-        try changes.append(fc);
+        try changes.append(allocator, fc);
         if (!std.mem.eql(u8, fp.?, ".rice.ini")) {
-            try non_ini_changes.append(fc);
+            try non_ini_changes.append(allocator, fc);
         }
     }
 
@@ -199,10 +194,10 @@ pub fn generateAutoCommitMessage(allocator: Allocator, git: *git_mod.Git, homeDi
         }
     }
 
-    var unique_names = std.ArrayList([]const u8).init(allocator);
+    var unique_names: std.ArrayList([]const u8) = .empty;
     defer {
         for (unique_names.items) |u| allocator.free(u);
-        unique_names.deinit();
+        unique_names.deinit(allocator);
     }
     var seen = std.StringHashMap(void).init(allocator);
     defer seen.deinit();
@@ -218,7 +213,7 @@ pub fn generateAutoCommitMessage(allocator: Allocator, git: *git_mod.Git, homeDi
                         if (disp.len == 0) disp = gp;
                         if (!seen.contains(disp)) {
                             try seen.put(disp, {});
-                            try unique_names.append(try allocator.dupe(u8, disp));
+                            try unique_names.append(allocator, try allocator.dupe(u8, disp));
                         }
                         break;
                     }
@@ -238,7 +233,7 @@ pub fn generateAutoCommitMessage(allocator: Allocator, git: *git_mod.Git, homeDi
         }
         if (!matched and !seen.contains(c.path)) {
             try seen.put(c.path, {});
-            try unique_names.append(try allocator.dupe(u8, c.path));
+            try unique_names.append(allocator, try allocator.dupe(u8, c.path));
         }
     }
 
@@ -292,14 +287,12 @@ pub fn commitCmd(allocator: Allocator, git: *git_mod.Git, homeDir: []const u8, a
 
 fn promptUser(prompt: []const u8) bool {
     std.debug.print("{s}", .{prompt});
-    const stdin = std.io.getStdIn().reader();
     var buf: [128]u8 = undefined;
-    if (stdin.readUntilDelimiterOrEof(&buf, '\n')) |line| {
-        if (line) |l| {
-            const trimmed = std.mem.trim(u8, l, " \t\r\n");
-            return std.ascii.eqlIgnoreCase(trimmed, "y") or std.ascii.eqlIgnoreCase(trimmed, "yes");
-        }
-    } else |_| {}
+    const n = std.Io.File.stdin().readStreaming(paths.getProcessIo(), &.{&buf}) catch return false;
+    if (n > 0) {
+        const trimmed = std.mem.trim(u8, buf[0..n], " \t\r\n");
+        return std.ascii.eqlIgnoreCase(trimmed, "y") or std.ascii.eqlIgnoreCase(trimmed, "yes");
+    }
     return false;
 }
 

@@ -187,11 +187,25 @@ pub const InstallDestResult = struct {
 };
 
 pub fn resolveInstallDestination(allocator: Allocator, homeDir: []const u8, userInput: []const u8, itemName: []const u8, isContents: bool) !InstallDestResult {
-    if (std.mem.trim(u8, userInput, " \t\r\n").len == 0) {
+    const s = std.mem.trim(u8, userInput, " \t\r\n");
+    if (s.len == 0) {
         return error.DestinationPathEmpty;
     }
 
-    var target = try resolveUserPath(allocator, homeDir, userInput);
+    var target: []u8 = undefined;
+    if (std.mem.startsWith(u8, s, "~/") or std.mem.startsWith(u8, s, "~\\")) {
+        const joined = try std.fs.path.join(allocator, &[_][]const u8{ homeDir, s[2..] });
+        defer allocator.free(joined);
+        target = try clean.cleanPath(allocator, joined);
+    } else if (std.mem.startsWith(u8, s, "./") or std.mem.startsWith(u8, s, ".\\") or std.mem.startsWith(u8, s, "../") or std.mem.startsWith(u8, s, "..\\") or std.mem.eql(u8, s, ".") or std.mem.eql(u8, s, "..")) {
+        target = try resolveUserPath(allocator, homeDir, s);
+    } else if (std.fs.path.isAbsolute(s)) {
+        target = try clean.cleanPath(allocator, s);
+    } else {
+        const joined = try std.fs.path.join(allocator, &[_][]const u8{ homeDir, s });
+        defer allocator.free(joined);
+        target = try clean.cleanPath(allocator, joined);
+    }
     errdefer allocator.free(target);
 
     if (!isContents and itemName.len > 0) {

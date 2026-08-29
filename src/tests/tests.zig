@@ -3,6 +3,14 @@ const config = @import("../core/config.zig");
 const paths = @import("../core/paths.zig");
 const fs = @import("../core/fs.zig");
 const bin = @import("../core/bin.zig");
+const ui = @import("../core/ui.zig");
+
+test "ui: spinner basic lifecycle" {
+    const allocator = std.testing.allocator;
+    const spinner = try ui.Spinner.start(allocator, "Testing loader");
+    spinner.updateMessage("Updated testing loader");
+    spinner.stop();
+}
 
 test "config: normalization and ini parsing" {
     const allocator = std.testing.allocator;
@@ -44,15 +52,124 @@ test "paths: sensitive file detection" {
 
 test "paths: github url parsing" {
     const allocator = std.testing.allocator;
-    const gh_info = try paths.parseGitHubURL(allocator, "https://github.com/h-jangra/rice/blob/main/README.md");
+
+    const gh_info1 = try paths.parseGitHubURL(allocator, "https://github.com/h-jangra/rice/blob/main/README.md");
     defer {
-        gh_info.deinit(allocator);
-        allocator.destroy(gh_info);
+        gh_info1.deinit(allocator);
+        allocator.destroy(gh_info1);
     }
-    try std.testing.expectEqualStrings("https://github.com/h-jangra/rice.git", gh_info.repo_url);
-    try std.testing.expectEqualStrings("main", gh_info.branch);
-    try std.testing.expectEqualStrings("README.md", gh_info.path);
-    try std.testing.expect(gh_info.isFile());
+    try std.testing.expectEqualStrings("https://github.com/h-jangra/rice.git", gh_info1.repo_url);
+    try std.testing.expectEqualStrings("main", gh_info1.branch);
+    try std.testing.expectEqualStrings("README.md", gh_info1.path);
+    try std.testing.expect(gh_info1.isFile());
+
+    const gh_info2 = try paths.parseGitHubURL(allocator, "https://github.com/h-jangra/dots/tree/master/.config/foot");
+    defer {
+        gh_info2.deinit(allocator);
+        allocator.destroy(gh_info2);
+    }
+    try std.testing.expectEqualStrings("https://github.com/h-jangra/dots.git", gh_info2.repo_url);
+    try std.testing.expectEqualStrings("master", gh_info2.branch);
+    try std.testing.expectEqualStrings(".config/foot", gh_info2.path);
+    try std.testing.expect(gh_info2.isDirectory());
+
+    const gh_info3 = try paths.parseGitHubURL(allocator, "https://github.com/h-jangra/dots/tree/master");
+    defer {
+        gh_info3.deinit(allocator);
+        allocator.destroy(gh_info3);
+    }
+    try std.testing.expectEqualStrings("https://github.com/h-jangra/dots.git", gh_info3.repo_url);
+    try std.testing.expectEqualStrings("master", gh_info3.branch);
+    try std.testing.expectEqualStrings("", gh_info3.path);
+
+    const gh_info4 = try paths.parseGitHubURL(allocator, "https://github.com/h-jangra/dots");
+    defer {
+        gh_info4.deinit(allocator);
+        allocator.destroy(gh_info4);
+    }
+    try std.testing.expectEqualStrings("https://github.com/h-jangra/dots.git", gh_info4.repo_url);
+    try std.testing.expectEqualStrings("", gh_info4.path);
+
+    // Test directory from GitHub with tree URL
+    const gh_info5 = try paths.parseGitHubURL(allocator, "https://github.com/Darkkal44/qylock/tree/main/themes/last-of-us");
+    defer {
+        gh_info5.deinit(allocator);
+        allocator.destroy(gh_info5);
+    }
+    try std.testing.expectEqualStrings("https://github.com/Darkkal44/qylock.git", gh_info5.repo_url);
+    try std.testing.expectEqualStrings("main", gh_info5.branch);
+    try std.testing.expectEqualStrings("themes/last-of-us", gh_info5.path);
+    try std.testing.expectEqualStrings("last-of-us", gh_info5.file_name);
+    try std.testing.expect(gh_info5.isDirectory());
+
+    // Test URL with query string and trailing slash
+    const gh_info6 = try paths.parseGitHubURL(allocator, "https://github.com/Darkkal44/qylock/tree/main/themes/last-of-us/?tab=readme-ov-file#section");
+    defer {
+        gh_info6.deinit(allocator);
+        allocator.destroy(gh_info6);
+    }
+    try std.testing.expectEqualStrings("https://github.com/Darkkal44/qylock.git", gh_info6.repo_url);
+    try std.testing.expectEqualStrings("main", gh_info6.branch);
+    try std.testing.expectEqualStrings("themes/last-of-us", gh_info6.path);
+
+    // Test raw.githubusercontent.com URL
+    const gh_info7 = try paths.parseGitHubURL(allocator, "https://raw.githubusercontent.com/Darkkal44/qylock/main/themes/last-of-us/theme.conf");
+    defer {
+        gh_info7.deinit(allocator);
+        allocator.destroy(gh_info7);
+    }
+    try std.testing.expectEqualStrings("https://github.com/Darkkal44/qylock.git", gh_info7.repo_url);
+    try std.testing.expectEqualStrings("main", gh_info7.branch);
+    try std.testing.expectEqualStrings("themes/last-of-us/theme.conf", gh_info7.path);
+    try std.testing.expect(gh_info7.isFile());
+
+    // Test GitLab tree URL
+    const gl_info = try paths.parseGitHubURL(allocator, "https://gitlab.com/user/myrepo/-/tree/main/config/foot");
+    defer {
+        gl_info.deinit(allocator);
+        allocator.destroy(gl_info);
+    }
+    try std.testing.expectEqualStrings("https://gitlab.com/user/myrepo.git", gl_info.repo_url);
+    try std.testing.expectEqualStrings("main", gl_info.branch);
+    try std.testing.expectEqualStrings("config/foot", gl_info.path);
+    try std.testing.expect(gl_info.isDirectory());
+
+    // Test Codeberg URL
+    const cb_info = try paths.parseGitHubURL(allocator, "https://codeberg.org/user/dotfiles/src/branch/master/.config/alacritty");
+    defer {
+        cb_info.deinit(allocator);
+        allocator.destroy(cb_info);
+    }
+    try std.testing.expectEqualStrings("https://codeberg.org/user/dotfiles.git", cb_info.repo_url);
+    try std.testing.expectEqualStrings("master", cb_info.branch);
+    try std.testing.expectEqualStrings(".config/alacritty", cb_info.path);
+    try std.testing.expect(cb_info.isDirectory());
+
+    // Releases should return error so they are routed to direct download
+    try std.testing.expectError(error.UnsupportedGitHubURL, paths.parseGitHubURL(allocator, "https://github.com/user/repo/releases/download/v1.0/font.zip"));
+}
+
+test "paths: resolve install destination" {
+    const allocator = std.testing.allocator;
+    const fake_home = "/home/testuser";
+
+    const res1 = try paths.resolveInstallDestination(allocator, fake_home, ".config/foot", "foot", false);
+    defer {
+        allocator.free(res1.config_path);
+        allocator.free(res1.abs_path);
+    }
+    try std.testing.expectEqualStrings("~/.config/foot", res1.config_path);
+    try std.testing.expectEqualStrings("/home/testuser/.config/foot", res1.abs_path);
+    try std.testing.expect(!res1.is_outside_home);
+
+    const res2 = try paths.resolveInstallDestination(allocator, fake_home, "~/.config/foot", "foot", false);
+    defer {
+        allocator.free(res2.config_path);
+        allocator.free(res2.abs_path);
+    }
+    try std.testing.expectEqualStrings("~/.config/foot", res2.config_path);
+    try std.testing.expectEqualStrings("/home/testuser/.config/foot", res2.abs_path);
+    try std.testing.expect(!res2.is_outside_home);
 }
 
 test "paths: repo url normalization" {

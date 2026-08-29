@@ -3,23 +3,19 @@ const Allocator = std.mem.Allocator;
 const paths = @import("paths/mod.zig");
 
 pub fn downloadWithCurl(allocator: Allocator, url: []const u8, destPath: []const u8) !void {
-    _ = allocator;
-    const argv = [_][]const u8{ "curl", "-#", "-fSL", "--proto", "=https,http", url, "-o", destPath };
-    var child = try std.process.spawn(paths.getProcessIo(), .{
+    const argv = [_][]const u8{ "curl", "-sSfL", "--proto", "=https,http", url, "-o", destPath };
+    const res = std.process.run(allocator, paths.getProcessIo(), .{
         .argv = &argv,
-        .stdin = .ignore,
-        .stdout = .ignore,
-        .stderr = .inherit,
-    });
+    }) catch return error.CurlProcessFailed;
+    defer allocator.free(res.stdout);
+    defer allocator.free(res.stderr);
 
-    const term = try child.wait(paths.getProcessIo());
-    switch (term) {
-        .exited => |code| {
-            if (code != 0) {
-                return error.CurlDownloadFailed;
-            }
-        },
-        else => return error.CurlProcessFailed,
+    if (res.term != .exited or res.term.exited != 0) {
+        const err_str = std.mem.trim(u8, res.stderr, " \t\r\n");
+        if (err_str.len > 0) {
+            std.debug.print("{s}\n", .{err_str});
+        }
+        return error.CurlDownloadFailed;
     }
 }
 
@@ -205,56 +201,59 @@ pub fn copyFile(src: []const u8, dst: []const u8) !void {
 }
 
 pub fn copyPath(allocator: Allocator, src: []const u8, dst: []const u8) !void {
-    const file_stat = openFileAbsolute(src, .{}) catch |err| {
-        if (err == error.IsDir) {
-            // It's a directory
-            try makePath(dst);
-            var dir = try openDirAbsolute(src, .{ .iterate = true });
-            defer dir.close(paths.getProcessIo());
-
-            var it = dir.iterate();
-            while (try it.next(paths.getProcessIo())) |entry| {
-                const child_src = try std.fs.path.join(allocator, &[_][]const u8{ src, entry.name });
-                defer allocator.free(child_src);
-                const child_dst = try std.fs.path.join(allocator, &[_][]const u8{ dst, entry.name });
-                defer allocator.free(child_dst);
-                try copyPath(allocator, child_src, child_dst);
-            }
-            return;
+    if (openDirAbsolute(src, .{ .iterate = true })) |d| {
+        var dir = d;
+        defer dir.close(paths.getProcessIo());
+        try makePath(dst);
+        var it = dir.iterate();
+        while (try it.next(paths.getProcessIo())) |entry| {
+            const child_src = try std.fs.path.join(allocator, &[_][]const u8{ src, entry.name });
+            defer allocator.free(child_src);
+            const child_dst = try std.fs.path.join(allocator, &[_][]const u8{ dst, entry.name });
+            defer allocator.free(child_dst);
+            try copyPath(allocator, child_src, child_dst);
         }
-        return err;
-    };
-    file_stat.close(paths.getProcessIo());
-    try copyFile(src, dst);
+        return;
+    } else |_| {
+        return copyFile(src, dst);
+    }
 }
 
 pub fn installPath(allocator: Allocator, src: []const u8, dst: []const u8) !void {
     const parent = std.fs.path.dirname(dst) orelse ".";
     try makePath(parent);
 
-    const base_name = std.fs.path.basename(dst);
-    const staging_dir_name = try std.fmt.allocPrint(allocator, "{s}/.rice-tmp-{d}", .{ parent, getMilliTimestamp() });
-    defer allocator.free(staging_dir_name);
+    var is_src_dir = false;
+    if (openDirAbsolute(src, .{})) |d| {
+        var dir = d;
+        dir.close(paths.getProcessIo());
+        is_src_dir = true;
+    } else |_| {}
 
-    try makePath(staging_dir_name);
-    defer deleteTreeAbsolute(staging_dir_name) catch {};
+    if (!is_src_dir) {
+        var is_dst_dir = false;
+        if (openDirAbsolute(dst, .{})) |d| {
+            var dir = d;
+            dir.close(paths.getProcessIo());
+            is_dst_dir = true;
+        } else |_| {}
 
-    const staged_dst = try std.fs.path.join(allocator, &[_][]const u8{ staging_dir_name, base_name });
-    defer allocator.free(staged_dst);
+        if (is_dst_dir) {
+            const base = std.fs.path.basename(src);
+            const target = try std.fs.path.join(allocator, &[_][]const u8{ dst, base });
+            defer allocator.free(target);
+            return copyFile(src, target);
+        }
+    }
 
-    try copyPath(allocator, src, staged_dst);
-
-    deleteTreeAbsolute(dst) catch {};
-    deleteFileAbsolute(dst) catch {};
-
-    renameAbsolute(staged_dst, dst) catch {
-        try copyPath(allocator, staged_dst, dst);
-    };
+    return copyPath(allocator, src, dst);
 }
 
 pub fn backupFile(allocator: Allocator, targetPath: []const u8) ![]u8 {
     _ = openFileAbsolute(targetPath, .{}) catch |err| {
-        if (err != error.IsDir) return err;
+        if (err != error.IsDir) {
+            _ = openDirAbsolute(targetPath, .{}) catch return err;
+        }
     };
 
     const ts = getTimestamp();

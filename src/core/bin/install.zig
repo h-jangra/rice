@@ -7,6 +7,7 @@ const fs = @import("../fs.zig");
 const source = @import("source.zig");
 const release = @import("release.zig");
 const extract = @import("extract.zig");
+const ui = @import("../ui.zig");
 
 pub const InstallBinOptions = struct {
     source: []const u8 = "",
@@ -69,26 +70,40 @@ pub fn installBinary(allocator: Allocator, opts: InstallBinOptions, homeDir: []c
             const dl_path = try std.fs.path.join(allocator, &[_][]const u8{ tmp_dir_path, "download" });
             defer allocator.free(dl_path);
 
-            std.debug.print("Downloading...\n", .{});
-            fs.downloadWithCurl(allocator, src.url, dl_path) catch |err| {
-                std.debug.print("Error: failed to download binary from {s}\n", .{src.url});
-                return err;
-            };
+            {
+                const sp_msg = try std.fmt.allocPrint(allocator, "Downloading {s}...", .{asset_name});
+                defer allocator.free(sp_msg);
+                const spinner = try ui.Spinner.start(allocator, sp_msg);
+                defer spinner.stop();
+
+                fs.downloadWithCurl(allocator, src.url, dl_path) catch |err| {
+                    std.debug.print("Error: failed to download binary from {s}\n", .{src.url});
+                    return err;
+                };
+            }
             data = try std.Io.Dir.cwd().readFileAlloc(paths.getProcessIo(), dl_path, allocator, .limited(100 * 1024 * 1024));
         },
         .github => {
             repo_name = try allocator.dupe(u8, src.repo);
-            var gh_asset = release.fetchGitHubReleaseAsset(allocator, src.owner, src.repo, opts.tag, goos, goarch) catch |err| {
-                if (err == error.NoMatchingAssetFound) {
-                    std.debug.print("Error: no matching release asset found for {s}/{s} on {s}/{s}.\n", .{ src.owner, src.repo, goos, goarch });
-                } else if (err == error.NoAssetsInRelease) {
-                    std.debug.print("Error: release contains no download assets for {s}/{s}.\n", .{ src.owner, src.repo });
-                } else if (err == error.GitHubApiFailed) {
-                    // error already printed by fetchGitHubReleaseAsset
-                } else {
-                    std.debug.print("Error: failed to fetch release asset for {s}/{s}: {s}\n", .{ src.owner, src.repo, @errorName(err) });
-                }
-                return err;
+
+            var gh_asset = blk: {
+                const fetch_msg = try std.fmt.allocPrint(allocator, "Fetching release info for {s}/{s}...", .{ src.owner, src.repo });
+                defer allocator.free(fetch_msg);
+                const fetch_sp = try ui.Spinner.start(allocator, fetch_msg);
+                defer fetch_sp.stop();
+
+                break :blk release.fetchGitHubReleaseAsset(allocator, src.owner, src.repo, opts.tag, goos, goarch) catch |err| {
+                    if (err == error.NoMatchingAssetFound) {
+                        std.debug.print("Error: no matching release asset found for {s}/{s} on {s}/{s}.\n", .{ src.owner, src.repo, goos, goarch });
+                    } else if (err == error.NoAssetsInRelease) {
+                        std.debug.print("Error: release contains no download assets for {s}/{s}.\n", .{ src.owner, src.repo });
+                    } else if (err == error.GitHubApiFailed) {
+                        // error already printed by fetchGitHubReleaseAsset
+                    } else {
+                        std.debug.print("Error: failed to fetch release asset for {s}/{s}: {s}\n", .{ src.owner, src.repo, @errorName(err) });
+                    }
+                    return err;
+                };
             };
             defer gh_asset.deinit(allocator);
 
@@ -96,11 +111,17 @@ pub fn installBinary(allocator: Allocator, opts: InstallBinOptions, homeDir: []c
             const dl_path = try std.fs.path.join(allocator, &[_][]const u8{ tmp_dir_path, "download" });
             defer allocator.free(dl_path);
 
-            std.debug.print("Downloading...\n", .{});
-            fs.downloadWithCurl(allocator, gh_asset.download_url, dl_path) catch |err| {
-                std.debug.print("Error: failed to download asset from {s}\n", .{gh_asset.download_url});
-                return err;
-            };
+            {
+                const dl_msg = try std.fmt.allocPrint(allocator, "Downloading {s}...", .{gh_asset.name});
+                defer allocator.free(dl_msg);
+                const dl_sp = try ui.Spinner.start(allocator, dl_msg);
+                defer dl_sp.stop();
+
+                fs.downloadWithCurl(allocator, gh_asset.download_url, dl_path) catch |err| {
+                    std.debug.print("Error: failed to download asset from {s}\n", .{gh_asset.download_url});
+                    return err;
+                };
+            }
             data = try std.Io.Dir.cwd().readFileAlloc(paths.getProcessIo(), dl_path, allocator, .limited(100 * 1024 * 1024));
         },
     }
@@ -116,14 +137,21 @@ pub fn installBinary(allocator: Allocator, opts: InstallBinOptions, homeDir: []c
     var binary_path: []u8 = undefined;
 
     if (fs.isArchive(asset_name) or fs.isArchiveData(data)) {
-        std.debug.print("Finding executable...\n", .{});
         const extract_dir = try std.fs.path.join(allocator, &[_][]const u8{ tmp_dir_path, "extracted" });
         defer allocator.free(extract_dir);
         try fs.makePath(extract_dir);
-        fs.extractArchive(allocator, data, asset_name, extract_dir) catch |err| {
-            std.debug.print("Error: failed to extract archive {s}: {s}\n", .{ asset_name, @errorName(err) });
-            return err;
-        };
+
+        {
+            const ext_msg = try std.fmt.allocPrint(allocator, "Extracting {s}...", .{asset_name});
+            defer allocator.free(ext_msg);
+            const ext_sp = try ui.Spinner.start(allocator, ext_msg);
+            defer ext_sp.stop();
+
+            fs.extractArchive(allocator, data, asset_name, extract_dir) catch |err| {
+                std.debug.print("Error: failed to extract archive {s}: {s}\n", .{ asset_name, @errorName(err) });
+                return err;
+            };
+        }
 
         if (extract.findExecutable(allocator, extract_dir, opts.name, repo_name)) |bp| {
             binary_path = bp;

@@ -2,6 +2,7 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const paths = @import("../paths/mod.zig");
 const fs = @import("../fs.zig");
+const ui = @import("../ui.zig");
 
 fn confirmPrompt(prompt: []const u8) bool {
     std.debug.print("{s}", .{prompt});
@@ -46,11 +47,18 @@ pub fn runDirectURLInstall(allocator: Allocator, homeDir: []const u8, rawURL: []
             try allocator.dupe(u8, base);
 
         dl_path = try std.fs.path.join(allocator, &[_][]const u8{ tmp_dir_path, asset_name });
-        std.debug.print("Downloading...\n", .{});
-        fs.downloadWithCurl(allocator, parsed_url, dl_path) catch |err| {
-            std.debug.print("Error: failed to download from {s}\n", .{parsed_url});
-            return err;
-        };
+
+        {
+            const dl_msg = try std.fmt.allocPrint(allocator, "Downloading {s}...", .{asset_name});
+            defer allocator.free(dl_msg);
+            const spinner = try ui.Spinner.start(allocator, dl_msg);
+            defer spinner.stop();
+
+            fs.downloadWithCurl(allocator, parsed_url, dl_path) catch |err| {
+                std.debug.print("Error: failed to download from {s}\n", .{parsed_url});
+                return err;
+            };
+        }
     } else {
         var resolved_dl = rawURL;
         var allocated_dl: ?[]u8 = null;
@@ -97,7 +105,6 @@ pub fn runDirectURLInstall(allocator: Allocator, homeDir: []const u8, rawURL: []
     const clean_home = try paths.cleanPath(allocator, homeDir);
     defer allocator.free(clean_home);
 
-    var is_outside = false;
     var dest_display: []u8 = undefined;
 
     if (std.mem.startsWith(u8, dest_abs, clean_home)) {
@@ -108,19 +115,28 @@ pub fn runDirectURLInstall(allocator: Allocator, homeDir: []const u8, rawURL: []
         } else if (rest.len == 0) {
             dest_display = try allocator.dupe(u8, "~");
         } else {
-            is_outside = true;
             dest_display = try allocator.dupe(u8, dest_abs);
         }
     } else {
-        is_outside = true;
         dest_display = try allocator.dupe(u8, dest_abs);
     }
     defer allocator.free(dest_display);
 
-    if (is_outside) {
-        const p_prompt = try std.fmt.allocPrint(allocator, "Destination '{s}' is outside home directory ({s}).\nProceed? [y/N]: ", .{ dest_abs, homeDir });
-        defer allocator.free(p_prompt);
-        if (!confirmPrompt(p_prompt)) {
+    var conflict = false;
+    if (fs.openFileAbsolute(dest_abs, .{})) |f| {
+        f.close(paths.getProcessIo());
+        conflict = true;
+    } else |_| {
+        if (fs.openDirAbsolute(dest_abs, .{})) |d| {
+            var dir = d;
+            dir.close(paths.getProcessIo());
+            conflict = true;
+        } else |_| {}
+    }
+    if (conflict) {
+        const prompt = try std.fmt.allocPrint(allocator, "Destination '{s}' already exists.\nOverwrite? [y/N]: ", .{dest_abs});
+        defer allocator.free(prompt);
+        if (!confirmPrompt(prompt)) {
             std.debug.print("Installation cancelled.\n", .{});
             return;
         }
@@ -130,7 +146,17 @@ pub fn runDirectURLInstall(allocator: Allocator, homeDir: []const u8, rawURL: []
         const extract_dir = try std.fs.path.join(allocator, &[_][]const u8{ tmp_dir_path, "extracted" });
         defer allocator.free(extract_dir);
         try fs.makePath(extract_dir);
-        try fs.extractArchive(allocator, data, asset_name, extract_dir);
+
+        {
+            const ext_msg = try std.fmt.allocPrint(allocator, "Extracting {s}...", .{asset_name});
+            defer allocator.free(ext_msg);
+            const ext_sp = try ui.Spinner.start(allocator, ext_msg);
+            defer ext_sp.stop();
+
+            fs.extractArchive(allocator, data, asset_name, extract_dir) catch |err| {
+                return err;
+            };
+        }
 
         var target_extract_path: []const u8 = extract_dir;
         var allocated_target: ?[]u8 = null;

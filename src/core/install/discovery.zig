@@ -7,6 +7,16 @@ pub fn runGitInDir(allocator: Allocator, dir: []const u8, args: []const []const 
     return runGitInDirQuiet(allocator, dir, args, false);
 }
 
+pub fn execGitInDir(allocator: Allocator, dir: []const u8, args: []const []const u8) !void {
+    const out = try runGitInDirQuiet(allocator, dir, args, false);
+    allocator.free(out);
+}
+
+pub fn execGitInDirQuiet(allocator: Allocator, dir: []const u8, args: []const []const u8) !void {
+    const out = try runGitInDirQuiet(allocator, dir, args, true);
+    allocator.free(out);
+}
+
 pub fn runGitInDirQuiet(allocator: Allocator, dir: []const u8, args: []const []const u8, quiet: bool) ![]u8 {
     var cmd_list: std.ArrayList([]const u8) = .empty;
     defer cmd_list.deinit(allocator);
@@ -156,13 +166,11 @@ pub fn resolveRemoteConfig(allocator: Allocator, tmpDir: []const u8, _: []const 
     if (runGitInDirQuiet(allocator, tmpDir, &[_][]const u8{ "cat-file", "-e", "FETCH_HEAD:.rice.ini" }, true)) |out| {
         allocator.free(out);
 
-        _ = runGitInDir(allocator, tmpDir, &[_][]const u8{ "sparse-checkout", "init", "--no-cone" }) catch {};
-        _ = runGitInDir(allocator, tmpDir, &[_][]const u8{ "sparse-checkout", "set", "--no-cone", ".rice.ini" }) catch {};
-        if (runGitInDir(allocator, tmpDir, &[_][]const u8{ "checkout", "--detach", "FETCH_HEAD" })) |chk_out| {
-            allocator.free(chk_out);
-        } else |_| {
+        _ = execGitInDir(allocator, tmpDir, &[_][]const u8{ "sparse-checkout", "init", "--no-cone" }) catch {};
+        _ = execGitInDir(allocator, tmpDir, &[_][]const u8{ "sparse-checkout", "set", "--no-cone", ".rice.ini" }) catch {};
+        execGitInDir(allocator, tmpDir, &[_][]const u8{ "checkout", "--detach", "FETCH_HEAD" }) catch {
             return error.CheckoutRiceIniFailed;
-        }
+        };
 
         const ini_path = try std.fs.path.join(allocator, &[_][]const u8{ tmpDir, ".rice.ini" });
         defer allocator.free(ini_path);

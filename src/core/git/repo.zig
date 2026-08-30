@@ -46,10 +46,18 @@ pub const Git = struct {
         return exec.execOutput(self.allocator, self.rice_dir, self.home_dir, args, false);
     }
 
+    fn runWithFiles(self: *const Git, prefix: []const []const u8, files: []const []const u8) !void {
+        if (files.len == 0) return;
+        var args: std.ArrayList([]const u8) = .empty;
+        defer args.deinit(self.allocator);
+        try args.appendSlice(self.allocator, prefix);
+        try args.appendSlice(self.allocator, files);
+        try self.run(args.items);
+    }
+
     pub fn initBare(self: *const Git) !void {
-        const argv = [_][]const u8{ "git", "init", "--bare", self.rice_dir };
         var child = try std.process.spawn(paths.getProcessIo(), .{
-            .argv = &argv,
+            .argv = &.{ "git", "init", "--bare", self.rice_dir },
             .stdin = .inherit,
             .stdout = .inherit,
             .stderr = .inherit,
@@ -57,14 +65,14 @@ pub const Git = struct {
         const term = try child.wait(paths.getProcessIo());
         if (term != .exited or term.exited != 0) return error.GitInitFailed;
 
-        _ = self.bareRun(&[_][]const u8{ "config", "status.showUntrackedFiles", "no" }) catch {};
-        _ = self.bareRun(&[_][]const u8{ "symbolic-ref", "HEAD", "refs/heads/main" }) catch {};
+        _ = self.bareRun(&.{ "config", "status.showUntrackedFiles", "no" }) catch {};
+        _ = self.bareRun(&.{ "symbolic-ref", "HEAD", "refs/heads/main" }) catch {};
 
-        const exclude_dir = try std.fs.path.join(self.allocator, &[_][]const u8{ self.rice_dir, "info" });
+        const exclude_dir = try std.fs.path.join(self.allocator, &.{ self.rice_dir, "info" });
         defer self.allocator.free(exclude_dir);
         try std.Io.Dir.cwd().createDirPath(paths.getProcessIo(), exclude_dir);
 
-        const exclude_path = try std.fs.path.join(self.allocator, &[_][]const u8{ exclude_dir, "exclude" });
+        const exclude_path = try std.fs.path.join(self.allocator, &.{ exclude_dir, "exclude" });
         defer self.allocator.free(exclude_path);
 
         const file = try std.Io.Dir.cwd().createFile(paths.getProcessIo(), exclude_path, .{ .permissions = @enumFromInt(0o644) });
@@ -73,21 +81,17 @@ pub const Git = struct {
     }
 
     pub fn isBareRepo(self: *const Git) bool {
-        if (self.bareOutput(&[_][]const u8{ "rev-parse", "--is-bare-repository" })) |out| {
+        if (self.bareOutput(&.{ "rev-parse", "--is-bare-repository" })) |out| {
             defer self.allocator.free(out);
             return std.mem.eql(u8, out, "true");
-        } else |_| {
-            return false;
-        }
+        } else |_| return false;
     }
 
     pub fn hasCommits(self: *const Git) bool {
-        if (self.output(&[_][]const u8{ "rev-parse", "--verify", "HEAD" })) |out| {
+        if (self.output(&.{ "rev-parse", "--verify", "HEAD" })) |out| {
             self.allocator.free(out);
             return true;
-        } else |_| {
-            return false;
-        }
+        } else |_| return false;
     }
 
     pub fn getCurrentBranch(self: *const Git) ![]u8 {
@@ -98,100 +102,71 @@ pub const Git = struct {
         const norm = try paths.normalizeRepoURL(self.allocator, raw_url);
         defer self.allocator.free(norm);
 
-        if (self.output(&[_][]const u8{ "remote", "get-url", "origin" })) |out| {
+        if (self.output(&.{ "remote", "get-url", "origin" })) |out| {
             self.allocator.free(out);
-            return self.run(&[_][]const u8{ "remote", "set-url", "origin", norm });
+            return self.run(&.{ "remote", "set-url", "origin", norm });
         } else |_| {
-            return self.run(&[_][]const u8{ "remote", "add", "origin", norm });
+            return self.run(&.{ "remote", "add", "origin", norm });
         }
     }
 
     pub fn getRemote(self: *const Git) ![]u8 {
-        return self.output(&[_][]const u8{ "remote", "get-url", "origin" });
+        return self.output(&.{ "remote", "get-url", "origin" });
     }
 
     pub fn add(self: *const Git, files: []const []const u8) !void {
-        if (files.len == 0) return;
-        var args: std.ArrayList([]const u8) = .empty;
-        defer args.deinit(self.allocator);
-        try args.append(self.allocator, "add");
-        try args.append(self.allocator, "--");
-        for (files) |f| {
-            try args.append(self.allocator, f);
-        }
-        try self.run(args.items);
+        return self.runWithFiles(&.{ "add", "--" }, files);
     }
 
     pub fn addUpdate(self: *const Git, files: []const []const u8) !void {
-        if (files.len == 0) return;
-        var args: std.ArrayList([]const u8) = .empty;
-        defer args.deinit(self.allocator);
-        try args.append(self.allocator, "add");
-        try args.append(self.allocator, "-u");
-        try args.append(self.allocator, "--");
-        for (files) |f| {
-            try args.append(self.allocator, f);
-        }
-        try self.run(args.items);
+        return self.runWithFiles(&.{ "add", "-u", "--" }, files);
     }
 
     pub fn removeCached(self: *const Git, files: []const []const u8) !void {
-        if (files.len == 0) return;
-        var args: std.ArrayList([]const u8) = .empty;
-        defer args.deinit(self.allocator);
-        try args.append(self.allocator, "rm");
-        try args.append(self.allocator, "--cached");
-        try args.append(self.allocator, "-r");
-        try args.append(self.allocator, "--ignore-unmatch");
-        try args.append(self.allocator, "--");
-        for (files) |f| {
-            try args.append(self.allocator, f);
-        }
-        try self.run(args.items);
+        return self.runWithFiles(&.{ "rm", "--cached", "-r", "--ignore-unmatch", "--" }, files);
     }
 
     pub fn commit(self: *const Git, msg: []const u8) !void {
-        try self.run(&[_][]const u8{ "commit", "-m", msg });
+        try self.run(&.{ "commit", "-m", msg });
     }
 
     pub fn push(self: *const Git) !void {
         if (self.getCurrentBranch()) |cur_branch| {
             defer self.allocator.free(cur_branch);
             if (cur_branch.len > 0 and !std.mem.eql(u8, cur_branch, "HEAD")) {
-                if (self.run(&[_][]const u8{ "push", "-u", "origin", cur_branch })) {
+                if (self.run(&.{ "push", "-u", "origin", cur_branch })) {
                     return;
                 } else |_| {}
             }
         } else |_| {}
 
-        if (self.run(&[_][]const u8{ "push", "origin", "HEAD" })) {
+        if (self.run(&.{ "push", "origin", "HEAD" })) {
             return;
         } else |_| {
-            return self.run(&[_][]const u8{"push"});
+            return self.run(&.{"push"});
         }
     }
 
     pub fn fetch(self: *const Git) !void {
-        return self.run(&[_][]const u8{ "fetch", "origin" });
+        return self.run(&.{ "fetch", "origin" });
     }
 
     pub fn merge(self: *const Git, ref: []const u8) !void {
-        if (self.run(&[_][]const u8{ "merge", "--ff-only", ref })) {
+        if (self.run(&.{ "merge", "--ff-only", ref })) {
             return;
         } else |_| {
-            return self.run(&[_][]const u8{ "merge", ref, "-m", "Merge remote-tracking branch into dotfiles" });
+            return self.run(&.{ "merge", ref, "-m", "Merge remote-tracking branch into dotfiles" });
         }
     }
 
     pub fn status(self: *const Git, files: []const []const u8) !void {
         var args: std.ArrayList([]const u8) = .empty;
         defer args.deinit(self.allocator);
-        try args.append(self.allocator, "status");
-        try args.append(self.allocator, "--");
+        try args.appendSlice(self.allocator, &.{ "status", "--" });
         if (files.len == 0) {
             try args.append(self.allocator, ".rice.ini");
         } else {
-            for (files) |f| try args.append(self.allocator, f);
+            try args.appendSlice(self.allocator, files);
         }
         try self.run(args.items);
     }
@@ -209,7 +184,7 @@ pub const Git = struct {
         if (files.len == 0) {
             try args.append(self.allocator, ".rice.ini");
         } else {
-            for (files) |f| try args.append(self.allocator, f);
+            try args.appendSlice(self.allocator, files);
         }
         try self.run(args.items);
     }
@@ -219,9 +194,7 @@ pub const Git = struct {
     }
 
     pub fn listTrackedFiles(self: *const Git, paths_filter: []const []const u8) !std.ArrayList([]u8) {
-        if (!self.hasCommits() or paths_filter.len == 0) {
-            return .empty;
-        }
+        if (!self.hasCommits() or paths_filter.len == 0) return .empty;
         return self.listRefFiles("HEAD", paths_filter);
     }
 
@@ -236,7 +209,7 @@ pub const Git = struct {
     pub fn getRefFileContent(self: *const Git, ref: []const u8, relPath: []const u8) ![]u8 {
         const spec = try std.fmt.allocPrint(self.allocator, "{s}:{s}", .{ ref, relPath });
         defer self.allocator.free(spec);
-        return self.outputBytes(&[_][]const u8{ "show", spec });
+        return self.outputBytes(&.{ "show", spec });
     }
 
     pub fn getHEADFileContent(self: *const Git, relPath: []const u8) ![]u8 {
@@ -244,14 +217,7 @@ pub const Git = struct {
     }
 
     pub fn checkoutHEAD(self: *const Git, files: []const []const u8) !void {
-        if (files.len == 0) return;
-        var args: std.ArrayList([]const u8) = .empty;
-        defer args.deinit(self.allocator);
-        try args.append(self.allocator, "checkout");
-        try args.append(self.allocator, "HEAD");
-        try args.append(self.allocator, "--");
-        for (files) |f| try args.append(self.allocator, f);
-        try self.run(args.items);
+        return self.runWithFiles(&.{ "checkout", "HEAD", "--" }, files);
     }
 
     pub fn switchBranch(self: *const Git, branch_raw: []const u8, create: bool, force: bool, merge_flag: bool) !void {
@@ -262,3 +228,4 @@ pub const Git = struct {
         return branch.branchList(self.allocator, self.rice_dir, self.home_dir, args);
     }
 };
+

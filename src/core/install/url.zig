@@ -1,19 +1,10 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
+const builtin = @import("builtin");
 const paths = @import("../paths/mod.zig");
 const fs = @import("../fs.zig");
 const ui = @import("../ui.zig");
-
-fn confirmPrompt(prompt: []const u8) bool {
-    std.debug.print("{s}", .{prompt});
-    var buf: [128]u8 = undefined;
-    const n = std.Io.File.stdin().readStreaming(paths.getProcessIo(), &.{&buf}) catch return false;
-    if (n > 0) {
-        const trimmed = std.mem.trim(u8, buf[0..n], " \t\r\n");
-        return std.ascii.eqlIgnoreCase(trimmed, "y") or std.ascii.eqlIgnoreCase(trimmed, "yes");
-    }
-    return false;
-}
+const bin_mod = @import("../bin/mod.zig");
 
 pub fn runDirectURLInstall(allocator: Allocator, homeDir: []const u8, rawURL: []const u8, rawDest: []const u8, contentsFlag: bool) !void {
     const tmp_dir_path = try std.fmt.allocPrint(allocator, "/tmp/rice-dl-{d}", .{fs.getMilliTimestamp()});
@@ -35,9 +26,7 @@ pub fn runDirectURLInstall(allocator: Allocator, homeDir: []const u8, rawURL: []
         }
 
         var clean_url = parsed_url;
-        if (std.mem.indexOfAny(u8, clean_url, "?#")) |idx| {
-            clean_url = clean_url[0..idx];
-        }
+        if (std.mem.indexOfAny(u8, clean_url, "?#")) |idx| clean_url = clean_url[0..idx];
         clean_url = std.mem.trimEnd(u8, clean_url, "/");
 
         const base = std.fs.path.basename(clean_url);
@@ -46,7 +35,7 @@ pub fn runDirectURLInstall(allocator: Allocator, homeDir: []const u8, rawURL: []
         else
             try allocator.dupe(u8, base);
 
-        dl_path = try std.fs.path.join(allocator, &[_][]const u8{ tmp_dir_path, asset_name });
+        dl_path = try std.fs.path.join(allocator, &.{ tmp_dir_path, asset_name });
 
         {
             const dl_msg = try std.fmt.allocPrint(allocator, "Downloading {s}...", .{asset_name});
@@ -65,14 +54,16 @@ pub fn runDirectURLInstall(allocator: Allocator, homeDir: []const u8, rawURL: []
         defer if (allocated_dl) |d| allocator.free(d);
 
         if (std.mem.startsWith(u8, resolved_dl, "~/") or std.mem.startsWith(u8, resolved_dl, "~\\")) {
-            allocated_dl = try std.fs.path.join(allocator, &[_][]const u8{ homeDir, resolved_dl[2..] });
+            allocated_dl = try std.fs.path.join(allocator, &.{ homeDir, resolved_dl[2..] });
             resolved_dl = allocated_dl.?;
         }
         asset_name = try allocator.dupe(u8, std.fs.path.basename(resolved_dl));
         dl_path = try allocator.dupe(u8, resolved_dl);
     }
-    defer allocator.free(asset_name);
-    defer allocator.free(dl_path);
+    defer {
+        allocator.free(asset_name);
+        allocator.free(dl_path);
+    }
 
     const data = try std.Io.Dir.cwd().readFileAlloc(paths.getProcessIo(), dl_path, allocator, .limited(100 * 1024 * 1024));
     defer allocator.free(data);
@@ -96,7 +87,7 @@ pub fn runDirectURLInstall(allocator: Allocator, homeDir: []const u8, rawURL: []
         } else |_| {}
 
         if (is_dir or std.mem.endsWith(u8, rawDest, "/") or std.mem.endsWith(u8, rawDest, "\\")) {
-            const joined = try std.fs.path.join(allocator, &[_][]const u8{ dest_abs, asset_name });
+            const joined = try std.fs.path.join(allocator, &.{ dest_abs, asset_name });
             allocator.free(dest_abs);
             dest_abs = joined;
         }
@@ -106,12 +97,10 @@ pub fn runDirectURLInstall(allocator: Allocator, homeDir: []const u8, rawURL: []
     defer allocator.free(clean_home);
 
     var dest_display: []u8 = undefined;
-
     if (std.mem.startsWith(u8, dest_abs, clean_home)) {
         var rest = dest_abs[clean_home.len..];
         if (rest.len > 0 and (rest[0] == '/' or rest[0] == '\\')) {
-            rest = rest[1..];
-            dest_display = try std.fmt.allocPrint(allocator, "~/{s}", .{rest});
+            dest_display = try std.fmt.allocPrint(allocator, "~/{s}", .{rest[1..]});
         } else if (rest.len == 0) {
             dest_display = try allocator.dupe(u8, "~");
         } else {
@@ -136,14 +125,14 @@ pub fn runDirectURLInstall(allocator: Allocator, homeDir: []const u8, rawURL: []
     if (conflict) {
         const prompt = try std.fmt.allocPrint(allocator, "Destination '{s}' already exists.\nOverwrite? [y/N]: ", .{dest_abs});
         defer allocator.free(prompt);
-        if (!confirmPrompt(prompt)) {
+        if (!fs.promptConfirm(prompt)) {
             std.debug.print("Installation cancelled.\n", .{});
             return;
         }
     }
 
     if (is_arch) {
-        const extract_dir = try std.fs.path.join(allocator, &[_][]const u8{ tmp_dir_path, "extracted" });
+        const extract_dir = try std.fs.path.join(allocator, &.{ tmp_dir_path, "extracted" });
         defer allocator.free(extract_dir);
         try fs.makePath(extract_dir);
 
@@ -153,9 +142,7 @@ pub fn runDirectURLInstall(allocator: Allocator, homeDir: []const u8, rawURL: []
             const ext_sp = try ui.Spinner.start(allocator, ext_msg);
             defer ext_sp.stop();
 
-            fs.extractArchive(allocator, data, asset_name, extract_dir) catch |err| {
-                return err;
-            };
+            try fs.extractArchive(allocator, data, asset_name, extract_dir);
         }
 
         var target_extract_path: []const u8 = extract_dir;
@@ -177,7 +164,7 @@ pub fn runDirectURLInstall(allocator: Allocator, homeDir: []const u8, rawURL: []
             dir.close(paths.getProcessIo());
 
             if (count == 1 and is_child_dir and single_child_name != null) {
-                allocated_target = try std.fs.path.join(allocator, &[_][]const u8{ extract_dir, single_child_name.? });
+                allocated_target = try std.fs.path.join(allocator, &.{ extract_dir, single_child_name.? });
                 target_extract_path = allocated_target.?;
             }
             if (single_child_name) |scn| allocator.free(scn);
@@ -189,15 +176,30 @@ pub fn runDirectURLInstall(allocator: Allocator, homeDir: []const u8, rawURL: []
         defer ext_dir.close(paths.getProcessIo());
         var it = ext_dir.iterate();
         while (try it.next(paths.getProcessIo())) |entry| {
-            const src_child = try std.fs.path.join(allocator, &[_][]const u8{ target_extract_path, entry.name });
+            const src_child = try std.fs.path.join(allocator, &.{ target_extract_path, entry.name });
             defer allocator.free(src_child);
-            const dst_child = try std.fs.path.join(allocator, &[_][]const u8{ dest_abs, entry.name });
+            const dst_child = try std.fs.path.join(allocator, &.{ dest_abs, entry.name });
             defer allocator.free(dst_child);
             try fs.copyPath(allocator, src_child, dst_child);
         }
     } else {
-        try fs.installPath(allocator, dl_path, dest_abs);
+        fs.installPath(allocator, dl_path, dest_abs) catch |err| {
+            if (err == error.AccessDenied or err == error.PermissionDenied) {
+                std.debug.print("Error: permission denied installing to '{s}'. Try running with sudo or check permissions.\n", .{dest_abs});
+            } else {
+                std.debug.print("Error installing to '{s}': {s}\n", .{ dest_abs, @errorName(err) });
+            }
+            return err;
+        };
+
+        if (builtin.os.tag != .windows and (bin_mod.isExecutableBinary(data) or (!fs.isHTMLContent(data) and !bin_mod.isIgnoredCandidate(asset_name, false, asset_name)))) {
+            if (fs.openFileAbsolute(dest_abs, .{})) |f| {
+                f.setPermissions(paths.getProcessIo(), @enumFromInt(0o755)) catch {};
+                f.close(paths.getProcessIo());
+            } else |_| {}
+        }
     }
 
     std.debug.print("Successfully installed '{s}' to {s}\n", .{ dest_display, dest_abs });
 }
+

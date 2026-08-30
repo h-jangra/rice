@@ -3,9 +3,7 @@ const Allocator = std.mem.Allocator;
 
 pub fn toSlashOwned(allocator: Allocator, p: []const u8) ![]u8 {
     const res = try allocator.alloc(u8, p.len);
-    for (p, 0..) |c, i| {
-        res[i] = if (c == '\\') '/' else c;
-    }
+    for (p, 0..) |c, i| res[i] = if (c == '\\') '/' else c;
     return res;
 }
 
@@ -28,15 +26,11 @@ pub fn cleanPath(allocator: Allocator, p: []const u8) ![]u8 {
         }
     }
 
-    if (parts.items.len == 0) {
-        if (is_abs) return try allocator.dupe(u8, "/");
-        return try allocator.dupe(u8, ".");
-    }
+    if (parts.items.len == 0) return allocator.dupe(u8, if (is_abs) "/" else ".");
 
     var total_len: usize = if (is_abs) 1 else 0;
     for (parts.items, 0..) |part, i| {
-        total_len += part.len;
-        if (i + 1 < parts.items.len) total_len += 1;
+        total_len += part.len + @intFromBool(i + 1 < parts.items.len);
     }
 
     var res = try allocator.alloc(u8, total_len);
@@ -45,7 +39,6 @@ pub fn cleanPath(allocator: Allocator, p: []const u8) ![]u8 {
         res[0] = '/';
         pos = 1;
     }
-
     for (parts.items, 0..) |part, i| {
         @memcpy(res[pos .. pos + part.len], part);
         pos += part.len;
@@ -54,6 +47,6 @@ pub fn cleanPath(allocator: Allocator, p: []const u8) ![]u8 {
             pos += 1;
         }
     }
-
     return res;
 }
+

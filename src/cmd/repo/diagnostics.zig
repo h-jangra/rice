@@ -165,3 +165,4 @@ pub fn doctorCmd(allocator: Allocator, git: *git_mod.Git, homeDir: []const u8) !
         return error.DoctorFoundIssues;
     }
 }
+

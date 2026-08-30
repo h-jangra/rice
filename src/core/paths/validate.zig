@@ -8,13 +8,10 @@ pub fn validateManagedPath(allocator: Allocator, homeDir: []const u8, config_p: 
     if (trimmed.len == 0) return error.ManagedPathEmpty;
     if (!std.mem.startsWith(u8, trimmed, "~/")) return error.ManagedPathMustStartWithTildeSlash;
 
-    const r = try resolve.resolvePath(allocator, homeDir, trimmed);
-    var res = r;
+    var res = try resolve.resolvePath(allocator, homeDir, trimmed);
     defer res.deinit(allocator);
 
-    if (!std.mem.eql(u8, res.config_path, trimmed)) {
-        return error.ManagedPathNotNormalized;
-    }
+    if (!std.mem.eql(u8, res.config_path, trimmed)) return error.ManagedPathNotNormalized;
 }
 
 pub fn validateSourcePath(allocator: Allocator, source: []const u8) ![]u8 {
@@ -23,9 +20,7 @@ pub fn validateSourcePath(allocator: Allocator, source: []const u8) ![]u8 {
     if (std.mem.startsWith(u8, trimmed, "/") or std.mem.startsWith(u8, trimmed, "\\") or std.fs.path.isAbsolute(trimmed)) {
         return error.SourcePathMustBeRelative;
     }
-    if (std.mem.startsWith(u8, trimmed, "~")) {
-        return error.SourcePathCannotUseTilde;
-    }
+    if (std.mem.startsWith(u8, trimmed, "~")) return error.SourcePathCannotUseTilde;
 
     const slash = try clean.toSlashOwned(allocator, trimmed);
     defer allocator.free(slash);
@@ -74,9 +69,7 @@ pub fn detectSensitiveFile(path_str: []const u8) ?[]const u8 {
 
     const secret_exts = [_][]const u8{ ".pem", ".key", ".p12", ".pfx", ".kdbx" };
     for (secret_exts) |ext| {
-        if (std.mem.endsWith(u8, lower_base, ext)) {
-            return "Private certificate / key / keystore file";
-        }
+        if (std.mem.endsWith(u8, lower_base, ext)) return "Private certificate / key / keystore file";
     }
 
     if (std.mem.startsWith(u8, lower_path, ".gnupg/") or std.mem.indexOf(u8, lower_path, "/.gnupg/") != null or std.mem.startsWith(u8, lower_path, "~/.gnupg/")) {
@@ -94,10 +87,9 @@ pub fn detectSensitiveFile(path_str: []const u8) ?[]const u8 {
 
 pub fn validateBinaryName(name: []const u8) !void {
     if (name.len == 0) return error.BinaryNameEmpty;
-    if (std.mem.indexOfAny(u8, name, "/\\ \t\n\r") != null) {
-        return error.BinaryNameContainsInvalidChars;
-    }
+    if (std.mem.indexOfAny(u8, name, "/\\ \t\n\r") != null) return error.BinaryNameContainsInvalidChars;
     if (std.mem.eql(u8, name, ".") or std.mem.eql(u8, name, "..") or std.mem.startsWith(u8, name, "..")) {
         return error.BinaryNameInvalid;
     }
 }
+

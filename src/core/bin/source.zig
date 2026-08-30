@@ -1,11 +1,9 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
+const paths = @import("../paths/mod.zig");
+const fs = @import("../fs.zig");
 
-pub const BinarySourceType = enum {
-    github,
-    url,
-    local,
-};
+pub const BinarySourceType = enum { github, url, local };
 
 pub const BinarySource = struct {
     source_type: BinarySourceType,
@@ -46,9 +44,6 @@ fn tryExtractGitHubOwnerRepo(s: []const u8) ?struct { owner: []const u8, repo: [
     }
     return .{ .owner = owner, .repo = repo_clean };
 }
-
-const paths = @import("../paths/mod.zig");
-const fs = @import("../fs.zig");
 
 pub fn parseBinarySource(allocator: Allocator, source: []const u8, homeDir: []const u8) !BinarySource {
     const s = std.mem.trim(u8, source, " \t\r\n");
@@ -111,3 +106,4 @@ pub fn parseBinarySource(allocator: Allocator, source: []const u8, homeDir: []co
 
     return error.InvalidSource;
 }
+

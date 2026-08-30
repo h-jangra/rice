@@ -7,17 +7,6 @@ const fs = @import("../../core/fs.zig");
 const bin_mod = @import("../../core/bin/mod.zig");
 const repo = @import("../repo/mod.zig");
 
-fn promptUser(prompt: []const u8) bool {
-    std.debug.print("{s}", .{prompt});
-    var buf: [128]u8 = undefined;
-    const n = std.Io.File.stdin().readStreaming(paths.getProcessIo(), &.{&buf}) catch return false;
-    if (n > 0) {
-        const trimmed = std.mem.trim(u8, buf[0..n], " \t\r\n");
-        return std.ascii.eqlIgnoreCase(trimmed, "y") or std.ascii.eqlIgnoreCase(trimmed, "yes");
-    }
-    return false;
-}
-
 pub fn restoreCmd(allocator: Allocator, git: *git_mod.Git, homeDir: []const u8, args: []const []const u8) !void {
     if (args.len > 0 and (std.mem.eql(u8, args[0], "--bins") or std.mem.eql(u8, args[0], "-b") or std.mem.eql(u8, args[0], "--bin"))) {
         const ini_path = try paths.getRiceIniPath(allocator, homeDir);
@@ -40,10 +29,8 @@ pub fn restoreCmd(allocator: Allocator, git: *git_mod.Git, homeDir: []const u8, 
         var keys: std.ArrayList([]const u8) = .empty;
         defer keys.deinit(allocator);
 
-        var it = cfg.binaries.iterator();
-        while (it.next()) |entry| {
-            try keys.append(allocator, entry.key_ptr.*);
-        }
+        var it = cfg.binaries.keyIterator();
+        while (it.next()) |entry| try keys.append(allocator, entry.*);
 
         std.mem.sort([]const u8, keys.items, {}, struct {
             fn lessThan(_: void, a: []const u8, b: []const u8) bool {
@@ -147,7 +134,7 @@ pub fn restoreCmd(allocator: Allocator, git: *git_mod.Git, homeDir: []const u8, 
     }
 
     for (tracked_files.items) |rel_file| {
-        const full_p = try std.fs.path.join(allocator, &[_][]const u8{ homeDir, rel_file });
+        const full_p = try std.fs.path.join(allocator, &.{ homeDir, rel_file });
         defer allocator.free(full_p);
 
         if (fs.openFileAbsolute(full_p, .{})) |f| {
@@ -166,15 +153,13 @@ pub fn restoreCmd(allocator: Allocator, git: *git_mod.Git, homeDir: []const u8, 
 
     if (conflicts.items.len > 0) {
         std.debug.print("The following local file(s) exist and differ from the repository:\n", .{});
-        for (conflicts.items) |c| {
-            std.debug.print("  {s}\n", .{c});
-        }
-        if (!promptUser("\nRestoring will overwrite these local file(s). Continue? [y/N]: ")) {
+        for (conflicts.items) |c| std.debug.print("  {s}\n", .{c});
+        if (!fs.promptConfirm("\nRestoring will overwrite these local file(s). Continue? [y/N]: ")) {
             std.debug.print("Restore cancelled.\n", .{});
             return;
         }
         for (conflicts.items) |c| {
-            const full_p = try std.fs.path.join(allocator, &[_][]const u8{ homeDir, c });
+            const full_p = try std.fs.path.join(allocator, &.{ homeDir, c });
             defer allocator.free(full_p);
             if (fs.backupFile(allocator, full_p)) |bak| {
                 defer allocator.free(bak);
@@ -256,7 +241,7 @@ pub fn discardCmd(allocator: Allocator, git: *git_mod.Git, homeDir: []const u8, 
             }
 
             if (!is_managed) {
-                if (git.listTrackedFiles(&[_][]const u8{res.git_path})) |tf| {
+                if (git.listTrackedFiles(&.{res.git_path})) |tf| {
                     var tf_mut = tf;
                     defer {
                         for (tf_mut.items) |item| allocator.free(item);
@@ -287,7 +272,7 @@ pub fn discardCmd(allocator: Allocator, git: *git_mod.Git, homeDir: []const u8, 
     }
 
     for (target_git_paths.items) |gp| {
-        if (git.output(&[_][]const u8{ "diff", "HEAD", "--", gp })) |diff_out| {
+        if (git.output(&.{ "diff", "HEAD", "--", gp })) |diff_out| {
             defer allocator.free(diff_out);
             if (diff_out.len > 0) {
                 try modified_git_paths.append(allocator, try allocator.dupe(u8, gp));
@@ -326,7 +311,7 @@ pub fn discardCmd(allocator: Allocator, git: *git_mod.Git, homeDir: []const u8, 
         for (unique_display_paths.items) |dp| {
             std.debug.print("  {s}\n", .{dp});
         }
-        if (!promptUser("\nDiscard local changes? [y/N]: ")) {
+        if (!fs.promptConfirm("\nDiscard local changes? [y/N]: ")) {
             std.debug.print("Discard cancelled.\n", .{});
             return;
         }
@@ -335,3 +320,4 @@ pub fn discardCmd(allocator: Allocator, git: *git_mod.Git, homeDir: []const u8, 
     try git.checkoutHEAD(unique_git_paths.items);
     std.debug.print("Successfully discarded local changes in {d} path(s).\n", .{unique_git_paths.items.len});
 }
+

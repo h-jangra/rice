@@ -22,9 +22,7 @@ pub fn parseCommitMessage(allocator: Allocator, args: []const []const u8) !?[]u8
             if (idx + 1 < args[1..].len) try buf.append(allocator, ' ');
         }
         const trimmed = std.mem.trim(u8, buf.items, " \t\r\n");
-        if (trimmed.len == 0) {
-            return error.CommitMessageEmpty;
-        }
+        if (trimmed.len == 0) return error.CommitMessageEmpty;
         return try allocator.dupe(u8, trimmed);
     }
 
@@ -43,9 +41,7 @@ pub fn parseCommitMessage(allocator: Allocator, args: []const []const u8) !?[]u8
                 }
             }
             const trimmed = std.mem.trim(u8, buf.items, " \t\r\n");
-            if (trimmed.len == 0) {
-                return error.CommitMessageEmpty;
-            }
+            if (trimmed.len == 0) return error.CommitMessageEmpty;
             return try allocator.dupe(u8, trimmed);
         }
     }
@@ -57,14 +53,12 @@ pub fn parseCommitMessage(allocator: Allocator, args: []const []const u8) !?[]u8
         if (idx + 1 < args.len) try buf.append(allocator, ' ');
     }
     const trimmed = std.mem.trim(u8, buf.items, " \t\r\n");
-    if (trimmed.len == 0) {
-        return null;
-    }
+    if (trimmed.len == 0) return null;
     return try allocator.dupe(u8, trimmed);
 }
 
 pub fn stageTrackedFiles(allocator: Allocator, git: *git_mod.Git, homeDir: []const u8, cfg: ?*const config.Config) !void {
-    try git.add(&[_][]const u8{".rice.ini"});
+    try git.add(&.{".rice.ini"});
     if (cfg == null) return;
 
     for (cfg.?.files.items) |f| {
@@ -86,11 +80,11 @@ pub fn stageTrackedFiles(allocator: Allocator, git: *git_mod.Git, homeDir: []con
                 }
 
                 if (exists) {
-                    git.add(&[_][]const u8{git_p}) catch |err| {
+                    git.add(&.{git_p}) catch |err| {
                         std.debug.print("Warning: could not add '{s}': {s}\n", .{ git_p, @errorName(err) });
                     };
                 } else {
-                    git.addUpdate(&[_][]const u8{git_p}) catch |err| {
+                    git.addUpdate(&.{git_p}) catch |err| {
                         std.debug.print("Warning: could not update index for '{s}': {s}\n", .{ git_p, @errorName(err) });
                     };
                 }
@@ -121,9 +115,7 @@ pub fn stageTrackedFiles(allocator: Allocator, git: *git_mod.Git, homeDir: []con
             } else |_| {}
         }
 
-        if (!covered) {
-            try to_untrack.append(allocator, gf);
-        }
+        if (!covered) try to_untrack.append(allocator, gf);
     }
 
     if (to_untrack.items.len > 0) {
@@ -142,7 +134,7 @@ const FileChange = struct {
 };
 
 pub fn generateAutoCommitMessage(allocator: Allocator, git: *git_mod.Git, homeDir: []const u8, cfg: ?*const config.Config) ![]u8 {
-    const diff_out = git.output(&[_][]const u8{ "diff", "--cached", "--name-status" }) catch return try allocator.dupe(u8, "update dotfiles");
+    const diff_out = git.output(&.{ "diff", "--cached", "--name-status" }) catch return try allocator.dupe(u8, "update dotfiles");
     defer allocator.free(diff_out);
 
     if (diff_out.len == 0) return try allocator.dupe(u8, "update dotfiles");
@@ -264,7 +256,7 @@ pub fn commitCmd(allocator: Allocator, git: *git_mod.Git, homeDir: []const u8, a
 
     try stageTrackedFiles(allocator, git, homeDir, cfg);
 
-    const diff = git.output(&[_][]const u8{ "diff", "--cached", "--name-only" }) catch return error.GitDiffFailed;
+    const diff = git.output(&.{ "diff", "--cached", "--name-only" }) catch return error.GitDiffFailed;
     defer allocator.free(diff);
 
     if (diff.len == 0) {
@@ -283,17 +275,6 @@ pub fn commitCmd(allocator: Allocator, git: *git_mod.Git, homeDir: []const u8, a
     defer if (allocated_cmsg) allocator.free(commit_msg);
 
     try git.commit(commit_msg);
-}
-
-fn promptUser(prompt: []const u8) bool {
-    std.debug.print("{s}", .{prompt});
-    var buf: [128]u8 = undefined;
-    const n = std.Io.File.stdin().readStreaming(paths.getProcessIo(), &.{&buf}) catch return false;
-    if (n > 0) {
-        const trimmed = std.mem.trim(u8, buf[0..n], " \t\r\n");
-        return std.ascii.eqlIgnoreCase(trimmed, "y") or std.ascii.eqlIgnoreCase(trimmed, "yes");
-    }
-    return false;
 }
 
 pub fn pushCmd(allocator: Allocator, git: *git_mod.Git, homeDir: []const u8, args: []const []const u8) !void {
@@ -323,11 +304,9 @@ pub fn pushCmd(allocator: Allocator, git: *git_mod.Git, homeDir: []const u8, arg
         _ = stageTrackedFiles(allocator, git, homeDir, c) catch {};
     }
 
-    // 1. Check for uncommitted / staged changes
-    const staged_diff = git.output(&[_][]const u8{ "diff", "--cached", "--name-status" }) catch null;
+    const staged_diff = git.output(&.{ "diff", "--cached", "--name-status" }) catch null;
     defer if (staged_diff) |sd| allocator.free(sd);
 
-    // 2. Check for unpushed commits compared to upstream origin remote
     var unpushed_commits: ?[]u8 = null;
     defer if (unpushed_commits) |uc| allocator.free(uc);
 
@@ -339,16 +318,15 @@ pub fn pushCmd(allocator: Allocator, git: *git_mod.Git, homeDir: []const u8, arg
             const upstream_spec = std.fmt.allocPrint(allocator, "origin/{s}..HEAD", .{cb}) catch null;
             if (upstream_spec) |spec| {
                 defer allocator.free(spec);
-                if (git.output(&[_][]const u8{ "log", "--oneline", spec })) |uc| {
+                if (git.output(&.{ "log", "--oneline", spec })) |uc| {
                     if (uc.len > 0) {
                         unpushed_commits = uc;
                     } else {
                         allocator.free(uc);
                     }
                 } else |_| {
-                    // Upstream might not exist yet; if has commits, show recent commits
                     if (git.hasCommits()) {
-                        if (git.output(&[_][]const u8{ "log", "-n", "5", "--oneline" })) |recent| {
+                        if (git.output(&.{ "log", "-n", "5", "--oneline" })) |recent| {
                             if (recent.len > 0) unpushed_commits = recent else allocator.free(recent);
                         } else |_| {}
                     }
@@ -389,12 +367,11 @@ pub fn pushCmd(allocator: Allocator, git: *git_mod.Git, homeDir: []const u8, arg
 
     std.debug.print("\n", .{});
 
-    if (!promptUser("Proceed with push? [y/N]: ")) {
+    if (!fs.promptConfirm("Proceed with push? [y/N]: ")) {
         std.debug.print("Push cancelled.\n", .{});
         return;
     }
 
-    // Auto-commit or commit with custom message staged changes if any
     if (has_staged and cfg != null) {
         if (msg_opt) |custom_msg| {
             _ = git.commit(custom_msg) catch {};
@@ -407,11 +384,10 @@ pub fn pushCmd(allocator: Allocator, git: *git_mod.Git, homeDir: []const u8, arg
     try git.push();
 
     if (git.hasCommits()) {
-        if (git.output(&[_][]const u8{ "log", "-1", "--format=%s" })) |cmsg| {
+        if (git.output(&.{ "log", "-1", "--format=%s" })) |cmsg| {
             defer allocator.free(cmsg);
-            if (cmsg.len > 0) {
-                std.debug.print("Pushed: {s}\n", .{cmsg});
-            }
+            if (cmsg.len > 0) std.debug.print("Pushed: {s}\n", .{cmsg});
         } else |_| {}
     }
 }
+

@@ -181,14 +181,14 @@ const command_help_map = std.StaticStringMap([]const u8).initComptime(.{
         \\Usage:
         \\  rice install <name> [--repo <url>] [-b|--branch <branch>] [--contents|-C]
         \\  rice install <source> <destination> [--repo <url>] [-b|--branch <branch>] [--contents|-C]
-        \\  rice install <github-url> <destination> [--contents|-C]
-        \\  rice install --bin <source> [--tag <tag>] [--name <name>] [--save]
+        \\  rice install <github-url> [destination] [--contents|-C]
+        \\  rice install --bin <source> [destination] [--tag <tag>] [--name <name>] [--save]
         \\
         \\Aliases:
         \\  rice i
         \\
         \\Options:
-        \\  --bin, --bins       Install executable binary to ~/.local/bin
+        \\  --bin, --bins       Install executable binary (defaults to ~/.local/bin or custom destination)
         \\  --repo <url>        Remote repository URL (defaults to ~/.rice.ini repo)
         \\  -b, --branch <name> Branch name (default: main on unix, windows on windows)
         \\  --contents, -C      Extract directory contents directly into destination
@@ -197,6 +197,7 @@ const command_help_map = std.StaticStringMap([]const u8).initComptime(.{
         \\  rice install nvim
         \\  rice install nvim -b main
         \\  rice install --bin sharkdp/bat
+        \\  rice install --bin sharkdp/bat /usr/local/bin
         \\  rice install --bin junegunn/fzf --save
         \\  rice install tmux --repo https://github.com/user/dotfiles
         \\  rice install config/tmux ~/.config/tmux --repo https://github.com/webpro/dotfiles
@@ -306,16 +307,16 @@ pub fn printDetailedHelp() void {
         \\Install Commands:
         \\  install, i <source> [destination] [flags]
         \\      Selectively download and install dotfiles using sparse checkouts, or
-        \\      install release binaries to ~/.local/bin with -b/--bin.
+        \\      install release binaries with --bin.
         \\
         \\      Flags:
-        \\        -b, --bin, --bins   Install executable binary to ~/.local/bin
+        \\        --bin, --bins       Install executable binary (defaults to ~/.local/bin or custom destination)
         \\        --repo <url>        Remote repository URL (defaults to ~/.rice.ini repo)
         \\        --branch <branch>   Branch to install from (default: main / windows)
         \\        --contents, -C      Extract directory contents directly into destination
         \\
         \\Binary Commands:
-        \\  bin [install] <source> [--tag <tag>] [--name <name>] [--save]
+        \\  bin [install] <source> [destination] [--tag <tag>] [--name <name>] [--save]
         \\      Download and install CLI binaries from GitHub releases, URLs, or local files.
         \\
         \\  bin list
@@ -355,11 +356,13 @@ pub fn printDetailedHelp() void {
         \\  rice install --contents https://github.com/user/dotfiles/tree/main/wallpapers ~/Pictures
         \\
         \\  # Install binaries
-        \\  rice install -b sharkdp/bat
+        \\  rice install --bin sharkdp/bat
         \\  rice bin sharkdp/bat
+        \\  rice bin sharkdp/bat /usr/local/bin
         \\  rice bin install junegunn/fzf --save
         \\  rice bin starship/starship --tag v1.18.0
-        \\  rice bin https://example.com/tool.tar.gz
+        \\  rice bin https://github.com/h-jangra/ghost.sh/releases/download/v0.2.0/ghost-x86_64-linux /usr/local/bin/ghost/ghost
+        \\  rice bin https://example.com/tool.tar.gz .
         \\  rice bin ./tool --name mytool
         \\  rice bin list
         \\  rice bin remove bat
@@ -400,9 +403,7 @@ pub fn main(init: std.process.Init) !void {
     var it = try std.process.Args.Iterator.initAllocator(init.minimal.args, allocator);
     defer it.deinit();
 
-    while (it.next()) |arg| {
-        try args_list.append(allocator, arg);
-    }
+    while (it.next()) |arg| try args_list.append(allocator, arg);
     const args = args_list.items;
 
     if (args.len < 2) {

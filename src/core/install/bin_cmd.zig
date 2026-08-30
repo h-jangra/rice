@@ -10,20 +10,21 @@ const fs = @import("../fs.zig");
 pub fn printBinHelp() void {
     std.debug.print(
         \\Usage:
-        \\  rice bin [install] <source> [--tag <tag>] [--name <name>] [--save]
+        \\  rice bin [install] <source> [destination] [--tag <tag>] [--name <name>] [--save]
         \\  rice bin list
         \\  rice bin remove <name>
         \\
         \\Aliases:
-        \\  rice install -b <source>
+        \\  rice install --bin <source> [destination]
         \\
         \\Examples:
         \\  rice bin sharkdp/bat
         \\  rice bin install sharkdp/bat
         \\  rice bin junegunn/fzf --save
         \\  rice bin starship/starship --tag v1.18.0
-        \\  rice install -b sharkdp/bat
-        \\  rice bin https://example.com/tool.tar.gz
+        \\  rice bin sharkdp/bat /usr/local/bin
+        \\  rice bin https://github.com/h-jangra/ghost.sh/releases/download/v0.2.0/ghost-x86_64-linux /usr/local/bin/ghost/ghost
+        \\  rice bin https://example.com/tool.tar.gz .
         \\  rice bin ./tool --name mytool
         \\  rice bin list
         \\  rice bin remove bat
@@ -65,6 +66,8 @@ pub fn runBinInstall(allocator: Allocator, homeDir: []const u8, args: []const []
             return error.UnknownFlag;
         } else if (opts.source.len == 0) {
             opts.source = arg;
+        } else if (opts.dest.len == 0) {
+            opts.dest = arg;
         } else {
             std.debug.print("Error: too many arguments provided.\n\n", .{});
             printBinHelp();
@@ -105,10 +108,8 @@ pub fn runBinList(allocator: Allocator, homeDir: []const u8) !void {
     var keys: std.ArrayList([]const u8) = .empty;
     defer keys.deinit(allocator);
 
-    var it = cfg.binaries.iterator();
-    while (it.next()) |entry| {
-        try keys.append(allocator, entry.key_ptr.*);
-    }
+    var it = cfg.binaries.keyIterator();
+    while (it.next()) |entry| try keys.append(allocator, entry.*);
 
     std.mem.sort([]const u8, keys.items, {}, struct {
         fn lessThan(_: void, a: []const u8, b: []const u8) bool {
@@ -116,12 +117,12 @@ pub fn runBinList(allocator: Allocator, homeDir: []const u8) !void {
         }
     }.lessThan);
 
-    const bin_dir = try std.fs.path.join(allocator, &[_][]const u8{ homeDir, ".local", "bin" });
+    const bin_dir = try std.fs.path.join(allocator, &.{ homeDir, ".local", "bin" });
     defer allocator.free(bin_dir);
 
     for (keys.items) |name| {
         var status: []const u8 = "missing";
-        const bin_p = try std.fs.path.join(allocator, &[_][]const u8{ bin_dir, name });
+        const bin_p = try std.fs.path.join(allocator, &.{ bin_dir, name });
         defer allocator.free(bin_p);
 
         if (fs.openFileAbsolute(bin_p, .{})) |f| {
@@ -143,10 +144,10 @@ pub fn runBinRemove(allocator: Allocator, homeDir: []const u8, args: []const []c
     const name = std.mem.trim(u8, args[0], " \t\r\n");
     try paths.validateBinaryName(name);
 
-    const bin_dir = try std.fs.path.join(allocator, &[_][]const u8{ homeDir, ".local", "bin" });
+    const bin_dir = try std.fs.path.join(allocator, &.{ homeDir, ".local", "bin" });
     defer allocator.free(bin_dir);
 
-    const target_file = try std.fs.path.join(allocator, &[_][]const u8{ bin_dir, name });
+    const target_file = try std.fs.path.join(allocator, &.{ bin_dir, name });
     defer allocator.free(target_file);
 
     var exists = false;
@@ -183,3 +184,4 @@ pub fn binCmd(allocator: Allocator, homeDir: []const u8, args: []const []const u
         return runBinInstall(allocator, homeDir, args);
     }
 }
+

@@ -121,7 +121,7 @@ pub fn removeCmd(allocator: Allocator, git: *git_mod.Git, homeDir: []const u8, a
         if (bin_name.len > 0) {
             var is_binary = cfg.binaries.contains(bin_name);
             if (!is_binary) {
-                const bin_file_p = std.fs.path.join(allocator, &[_][]const u8{ homeDir, ".local", "bin", bin_name }) catch null;
+                const bin_file_p = std.fs.path.join(allocator, &.{ homeDir, ".local", "bin", bin_name }) catch null;
                 if (bin_file_p) |bfp| {
                     defer allocator.free(bfp);
                     if (fs.openFileAbsolute(bfp, .{})) |f| {
@@ -141,8 +141,8 @@ pub fn removeCmd(allocator: Allocator, git: *git_mod.Git, homeDir: []const u8, a
     _ = cfg.removeFile(res.config_path);
     try config.saveConfig(allocator, ini_path, cfg);
 
-    try git.removeCached(&[_][]const u8{res.git_path});
-    try git.add(&[_][]const u8{".rice.ini"});
+    try git.removeCached(&.{res.git_path});
+    try git.add(&.{".rice.ini"});
 
     std.debug.print("Removed '{s}' from rice tracking (working tree file preserved).\n", .{res.config_path});
 }
@@ -154,9 +154,7 @@ pub fn listCmd(allocator: Allocator, homeDir: []const u8) !void {
         allocator.destroy(cfg);
     }
 
-    for (cfg.files.items) |f| {
-        std.debug.print("{s}\n", .{f});
-    }
+    for (cfg.files.items) |f| std.debug.print("{s}\n", .{f});
 }
 
 pub fn statusCmd(allocator: Allocator, git: *git_mod.Git, homeDir: []const u8) !void {
@@ -215,3 +213,4 @@ pub fn diffCmd(allocator: Allocator, git: *git_mod.Git, homeDir: []const u8, arg
 
     try git.diff(list.items);
 }
+

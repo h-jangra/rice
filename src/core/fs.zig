@@ -1,20 +1,20 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
+const builtin = @import("builtin");
 const paths = @import("paths/mod.zig");
 
 pub fn downloadWithCurl(allocator: Allocator, url: []const u8, destPath: []const u8) !void {
-    const argv = [_][]const u8{ "curl", "-sSfL", "--proto", "=https,http", url, "-o", destPath };
     const res = std.process.run(allocator, paths.getProcessIo(), .{
-        .argv = &argv,
+        .argv = &.{ "curl", "-sSfL", "--proto", "=https,http", url, "-o", destPath },
     }) catch return error.CurlProcessFailed;
-    defer allocator.free(res.stdout);
-    defer allocator.free(res.stderr);
+    defer {
+        allocator.free(res.stdout);
+        allocator.free(res.stderr);
+    }
 
     if (res.term != .exited or res.term.exited != 0) {
         const err_str = std.mem.trim(u8, res.stderr, " \t\r\n");
-        if (err_str.len > 0) {
-            std.debug.print("{s}\n", .{err_str});
-        }
+        if (err_str.len > 0) std.debug.print("{s}\n", .{err_str});
         return error.CurlDownloadFailed;
     }
 }
@@ -22,12 +22,9 @@ pub fn downloadWithCurl(allocator: Allocator, url: []const u8, destPath: []const
 pub fn isHTMLContent(data: []const u8) bool {
     const sample_len = @min(data.len, 512);
     if (sample_len == 0) return false;
-    const sample = data[0..sample_len];
 
     var lower_buf: [512]u8 = undefined;
-    for (sample, 0..) |c, i| {
-        lower_buf[i] = std.ascii.toLower(c);
-    }
+    for (data[0..sample_len], 0..) |c, i| lower_buf[i] = std.ascii.toLower(c);
     const lower = std.mem.trim(u8, lower_buf[0..sample_len], " \t\r\n");
 
     return std.mem.startsWith(u8, lower, "<!doctype html") or
@@ -38,19 +35,13 @@ pub fn isHTMLContent(data: []const u8) bool {
 }
 
 pub fn isArchive(name: []const u8) bool {
-    var lower_buf: [256]u8 = undefined;
-    const lower = if (name.len <= 256) blk: {
-        for (name, 0..) |c, i| lower_buf[i] = std.ascii.toLower(c);
-        break :blk lower_buf[0..name.len];
-    } else name;
-
     const exts = [_][]const u8{
         ".tar.gz", ".tgz",     ".zip",     ".tar",
         ".tar.xz", ".txz",     ".tar.bz2", ".tbz2",
         ".tbz",    ".tar.zst",
     };
     for (exts) |ext| {
-        if (std.mem.endsWith(u8, lower, ext)) return true;
+        if (std.ascii.endsWithIgnoreCase(name, ext)) return true;
     }
     return false;
 }
@@ -58,18 +49,14 @@ pub fn isArchive(name: []const u8) bool {
 pub fn isArchiveData(data: []const u8) bool {
     if (data.len >= 262 and std.mem.eql(u8, data[257..262], "ustar")) return true;
     if (data.len >= 2 and data[0] == 0x1f and data[1] == 0x8b) return true; // gzip
-    if (data.len >= 4 and std.mem.eql(u8, data[0..4], &[_]u8{ 0x50, 0x4b, 0x03, 0x04 })) return true; // zip
+    if (data.len >= 4 and std.mem.eql(u8, data[0..4], &.{ 0x50, 0x4b, 0x03, 0x04 })) return true; // zip
     if (data.len >= 3 and std.mem.eql(u8, data[0..3], "BZh")) return true; // bz2
-    if (data.len >= 6 and std.mem.eql(u8, data[0..6], &[_]u8{ 0xfd, 0x37, 0x7a, 0x58, 0x5a, 0x00 })) return true; // xz
-    if (data.len >= 4 and std.mem.eql(u8, data[0..4], &[_]u8{ 0x28, 0xb5, 0x2f, 0xfd })) return true; // zstd
-    return false;
+    if (data.len >= 6 and std.mem.eql(u8, data[0..6], &.{ 0xfd, 0x37, 0x7a, 0x58, 0x5a, 0x00 })) return true; // xz
+    return data.len >= 4 and std.mem.eql(u8, data[0..4], &.{ 0x28, 0xb5, 0x2f, 0xfd }); // zstd
 }
 
 pub fn extractArchive(allocator: Allocator, data: []const u8, name: []const u8, destDir: []const u8) !void {
-    const is_zip = std.mem.endsWith(u8, name, ".zip") or
-        (data.len >= 4 and std.mem.eql(u8, data[0..4], &[_]u8{ 0x50, 0x4b, 0x03, 0x04 }));
-
-    if (is_zip) {
+    if (std.ascii.endsWithIgnoreCase(name, ".zip") or (data.len >= 4 and std.mem.eql(u8, data[0..4], &.{ 0x50, 0x4b, 0x03, 0x04 }))) {
         return extractZipWithSystem(allocator, data, destDir);
     }
     return extractTarWithSystem(allocator, data, destDir);
@@ -130,12 +117,13 @@ pub fn extractTarWithSystem(allocator: Allocator, data: []const u8, destDir: []c
     file.close(paths.getProcessIo());
     defer deleteFileAbsolute(tmp_file_path) catch {};
 
-    const argv = [_][]const u8{ "tar", "-xf", tmp_file_path, "-C", destDir };
     const res = try std.process.run(allocator, paths.getProcessIo(), .{
-        .argv = &argv,
+        .argv = &.{ "tar", "-xf", tmp_file_path, "-C", destDir },
     });
-    defer allocator.free(res.stdout);
-    defer allocator.free(res.stderr);
+    defer {
+        allocator.free(res.stdout);
+        allocator.free(res.stderr);
+    }
 
     switch (res.term) {
         .exited => |code| {
@@ -157,37 +145,30 @@ pub fn extractZipWithSystem(allocator: Allocator, data: []const u8, destDir: []c
     file.close(paths.getProcessIo());
     defer deleteFileAbsolute(tmp_file_path) catch {};
 
-    // Try unzip first, fall back to tar
-    var argv = [_][]const u8{ "unzip", "-q", "-o", tmp_file_path, "-d", destDir };
-    if (std.process.run(allocator, paths.getProcessIo(), .{ .argv = &argv })) |res| {
-        defer allocator.free(res.stdout);
-        defer allocator.free(res.stderr);
+    if (std.process.run(allocator, paths.getProcessIo(), .{ .argv = &.{ "unzip", "-q", "-o", tmp_file_path, "-d", destDir } })) |res| {
+        defer {
+            allocator.free(res.stdout);
+            allocator.free(res.stderr);
+        }
         if (res.term == .exited and res.term.exited == 0) return;
     } else |_| {}
 
-    // Fallback: tar -xf
-    const tar_argv = [_][]const u8{ "tar", "-xf", tmp_file_path, "-C", destDir };
-    const res = try std.process.run(allocator, paths.getProcessIo(), .{ .argv = &tar_argv });
-    defer allocator.free(res.stdout);
-    defer allocator.free(res.stderr);
-    if (res.term != .exited or res.term.exited != 0) {
-        return error.ZipExtractionFailed;
+    const res = try std.process.run(allocator, paths.getProcessIo(), .{ .argv = &.{ "tar", "-xf", tmp_file_path, "-C", destDir } });
+    defer {
+        allocator.free(res.stdout);
+        allocator.free(res.stderr);
     }
+    if (res.term != .exited or res.term.exited != 0) return error.ZipExtractionFailed;
 }
 
 pub fn copyFile(src: []const u8, dst: []const u8) !void {
-    const parent = std.fs.path.dirname(dst);
-    if (parent) |p| {
-        try makePath(p);
-    }
+    if (std.fs.path.dirname(dst)) |p| try makePath(p);
 
     const in_file = try openFileAbsolute(src, .{});
     defer in_file.close(paths.getProcessIo());
 
     const stat = try in_file.stat(paths.getProcessIo());
-    const mode = stat.permissions;
-
-    const out_file = try createFileAbsolute(dst, .{ .permissions = mode });
+    const out_file = try createFileAbsolute(dst, .{ .permissions = stat.permissions });
     defer out_file.close(paths.getProcessIo());
 
     var buf: [64 * 1024]u8 = undefined;
@@ -200,108 +181,152 @@ pub fn copyFile(src: []const u8, dst: []const u8) !void {
     }
 }
 
+pub fn promptConfirm(prompt: []const u8) bool {
+    std.debug.print("{s}", .{prompt});
+    var buf: [128]u8 = undefined;
+    const n = std.Io.File.stdin().readStreaming(paths.getProcessIo(), &.{&buf}) catch return false;
+    if (n > 0) {
+        const trimmed = std.mem.trim(u8, buf[0..n], " \t\r\n");
+        return std.ascii.eqlIgnoreCase(trimmed, "y") or std.ascii.eqlIgnoreCase(trimmed, "yes");
+    }
+    return false;
+}
+
+fn runInherit(argv: []const []const u8) !void {
+    var child = try std.process.spawn(paths.getProcessIo(), .{
+        .argv = argv,
+        .stdin = .inherit,
+        .stdout = .inherit,
+        .stderr = .inherit,
+    });
+    const term = try child.wait(paths.getProcessIo());
+    if (term != .exited or term.exited != 0) return error.SudoElevationFailed;
+}
+
+pub fn sudoInstallPath(allocator: Allocator, src: []const u8, dst: []const u8, is_executable: bool) !void {
+    const parent = std.fs.path.dirname(dst) orelse ".";
+    try runInherit(&.{ "sudo", "mkdir", "-p", parent });
+
+    const is_src_dir = if (openDirAbsolute(src, .{})) |d| blk: {
+        var dir = d;
+        dir.close(paths.getProcessIo());
+        break :blk true;
+    } else |_| false;
+
+    if (is_src_dir) {
+        try runInherit(&.{ "sudo", "mkdir", "-p", dst });
+        const src_glob = try std.fmt.allocPrint(allocator, "{s}/.", .{src});
+        defer allocator.free(src_glob);
+        try runInherit(&.{ "sudo", "cp", "-R", src_glob, dst });
+    } else {
+        try runInherit(&.{ "sudo", "cp", src, dst });
+    }
+
+    if (is_executable and builtin.os.tag != .windows) {
+        try runInherit(&.{ "sudo", "chmod", "755", dst });
+    }
+}
+
+fn handlePermissionDenied(allocator: Allocator, src: []const u8, dst: []const u8, err: anyerror, is_write: bool) !void {
+    if ((err == error.AccessDenied or err == error.PermissionDenied) and builtin.os.tag != .windows) {
+        const action = if (is_write) "writing to" else "creating directory";
+        const prompt = try std.fmt.allocPrint(allocator, "Permission denied {s} '{s}'. Elevate with sudo? [y/N]: ", .{ action, dst });
+        defer allocator.free(prompt);
+        if (promptConfirm(prompt)) return sudoInstallPath(allocator, src, dst, false);
+        return error.PermissionDenied;
+    }
+    return err;
+}
+
 pub fn copyPath(allocator: Allocator, src: []const u8, dst: []const u8) !void {
     if (openDirAbsolute(src, .{ .iterate = true })) |d| {
         var dir = d;
         defer dir.close(paths.getProcessIo());
-        try makePath(dst);
+        makePath(dst) catch |err| {
+            return handlePermissionDenied(allocator, src, dst, err, false);
+        };
         var it = dir.iterate();
         while (try it.next(paths.getProcessIo())) |entry| {
-            const child_src = try std.fs.path.join(allocator, &[_][]const u8{ src, entry.name });
+            const child_src = try std.fs.path.join(allocator, &.{ src, entry.name });
             defer allocator.free(child_src);
-            const child_dst = try std.fs.path.join(allocator, &[_][]const u8{ dst, entry.name });
+            const child_dst = try std.fs.path.join(allocator, &.{ dst, entry.name });
             defer allocator.free(child_dst);
             try copyPath(allocator, child_src, child_dst);
         }
-        return;
     } else |_| {
-        return copyFile(src, dst);
+        return copyFile(src, dst) catch |err| {
+            return handlePermissionDenied(allocator, src, dst, err, true);
+        };
     }
 }
 
 pub fn installPath(allocator: Allocator, src: []const u8, dst: []const u8) !void {
     const parent = std.fs.path.dirname(dst) orelse ".";
-    try makePath(parent);
+    makePath(parent) catch |err| {
+        return handlePermissionDenied(allocator, src, parent, err, false);
+    };
 
-    var is_src_dir = false;
-    if (openDirAbsolute(src, .{})) |d| {
+    const is_src_dir = if (openDirAbsolute(src, .{})) |d| blk: {
         var dir = d;
         dir.close(paths.getProcessIo());
-        is_src_dir = true;
-    } else |_| {}
+        break :blk true;
+    } else |_| false;
 
     if (!is_src_dir) {
-        var is_dst_dir = false;
-        if (openDirAbsolute(dst, .{})) |d| {
+        const is_dst_dir = if (openDirAbsolute(dst, .{})) |d| blk: {
             var dir = d;
             dir.close(paths.getProcessIo());
-            is_dst_dir = true;
-        } else |_| {}
+            break :blk true;
+        } else |_| false;
 
         if (is_dst_dir) {
-            const base = std.fs.path.basename(src);
-            const target = try std.fs.path.join(allocator, &[_][]const u8{ dst, base });
+            const target = try std.fs.path.join(allocator, &.{ dst, std.fs.path.basename(src) });
             defer allocator.free(target);
-            return copyFile(src, target);
+            return copyFile(src, target) catch |err| {
+                return handlePermissionDenied(allocator, src, target, err, true);
+            };
         }
     }
 
     return copyPath(allocator, src, dst);
 }
 
+fn fileExists(p: []const u8) bool {
+    if (openFileAbsolute(p, .{})) |f| {
+        f.close(paths.getProcessIo());
+        return true;
+    } else |_| return false;
+}
+
 pub fn backupFile(allocator: Allocator, targetPath: []const u8) ![]u8 {
     _ = openFileAbsolute(targetPath, .{}) catch |err| {
-        if (err != error.IsDir) {
-            _ = openDirAbsolute(targetPath, .{}) catch return err;
-        }
+        if (err != error.IsDir) _ = openDirAbsolute(targetPath, .{}) catch return err;
     };
 
-    const ts = getTimestamp();
-    const epoch_seconds = @as(u64, @intCast(ts));
-    const epoch_day = epoch_seconds / 86400;
+    const epoch_seconds = @as(u64, @intCast(getTimestamp()));
     const day_seconds = epoch_seconds % 86400;
-
-    // Approximate UTC timestamp formatting: YYYYMMDD-HHMMSS
-    const year_day = std.time.epoch.EpochDay{ .day = @as(u47, @intCast(epoch_day)) };
-    const year_and_day = year_day.calculateYearDay();
-    const month_and_day = year_and_day.calculateMonthDay();
-
-    const hours = day_seconds / 3600;
-    const minutes = (day_seconds % 3600) / 60;
-    const seconds = day_seconds % 60;
+    const year_day = std.time.epoch.EpochDay{ .day = @as(u47, @intCast(epoch_seconds / 86400)) };
+    const yd = year_day.calculateYearDay();
+    const month_day = yd.calculateMonthDay();
 
     const base_backup = try std.fmt.allocPrint(allocator, "{s}.bak.{d:0>4}{d:0>2}{d:0>2}-{d:0>2}{d:0>2}{d:0>2}", .{
         targetPath,
-        year_and_day.year,
-        month_and_day.month.numeric(),
-        month_and_day.day_index + 1,
-        hours,
-        minutes,
-        seconds,
+        yd.year,
+        month_day.month.numeric(),
+        month_day.day_index + 1,
+        day_seconds / 3600,
+        (day_seconds % 3600) / 60,
+        day_seconds % 60,
     });
     errdefer allocator.free(base_backup);
 
     var final_backup = base_backup;
-
-    var exists = true;
-    if (openFileAbsolute(final_backup, .{})) |f| {
-        f.close(paths.getProcessIo());
-    } else |_| {
-        exists = false;
-    }
-
-    if (exists) {
+    if (fileExists(final_backup)) {
         var found = false;
         var i: usize = 1;
         while (i <= 100) : (i += 1) {
             const cand = try std.fmt.allocPrint(allocator, "{s}.{d}", .{ base_backup, i });
-            var cand_exists = true;
-            if (openFileAbsolute(cand, .{})) |f| {
-                f.close(paths.getProcessIo());
-            } else |_| {
-                cand_exists = false;
-            }
-            if (!cand_exists) {
+            if (!fileExists(cand)) {
                 allocator.free(final_backup);
                 final_backup = cand;
                 found = true;
@@ -309,11 +334,10 @@ pub fn backupFile(allocator: Allocator, targetPath: []const u8) ![]u8 {
             }
             allocator.free(cand);
         }
-        if (!found) {
-            return error.BackupCollisionLimitReached;
-        }
+        if (!found) return error.BackupCollisionLimitReached;
     }
 
     try copyPath(allocator, targetPath, final_backup);
     return final_backup;
 }
+

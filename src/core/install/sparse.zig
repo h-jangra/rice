@@ -21,7 +21,7 @@ pub fn printInstallUsage() void {
         \\  rice install <name> [--repo <url>] [-b|--branch <branch>] [--contents|-C]
         \\  rice install <source> <destination> [--repo <url>] [-b|--branch <branch>] [--contents|-C]
         \\  rice install <github-url> [destination] [--contents|-C]
-        \\  rice install --bin <source> [--tag <tag>] [--name <name>] [--save]
+        \\  rice install --bin <source> [destination] [--tag <tag>] [--name <name>] [--save]
         \\
         \\Examples:
         \\  rice install --repo https://github.com/user/dotfiles -b main
@@ -29,6 +29,7 @@ pub fn printInstallUsage() void {
         \\  rice install nvim
         \\  rice install nvim -b main
         \\  rice install --bin sharkdp/bat
+        \\  rice install --bin sharkdp/bat /usr/local/bin
         \\  rice install --bin junegunn/fzf --save
         \\  rice install tmux --repo https://github.com/user/dotfiles
         \\  rice install config/tmux ~/.config/tmux --repo https://github.com/webpro/dotfiles
@@ -49,13 +50,13 @@ pub fn printInstallHelp() void {
         \\  rice install <name> [--repo <url>] [-b|--branch <branch>] [--contents|-C]
         \\  rice install <source> <destination> [--repo <url>] [-b|--branch <branch>] [--contents|-C]
         \\  rice install <github-url> [destination] [--contents|-C]
-        \\  rice install --bin <source> [--tag <tag>] [--name <name>] [--save]
+        \\  rice install --bin <source> [destination] [--tag <tag>] [--name <name>] [--save]
         \\
         \\Aliases:
         \\  rice i
         \\
         \\Options:
-        \\  --bin, --bins       Install executable binary to ~/.local/bin
+        \\  --bin, --bins       Install executable binary (defaults to ~/.local/bin or custom destination)
         \\  -r, --repo <url>    Remote repository URL (defaults to ~/.rice.ini repo)
         \\  -b, --branch <name> Branch name (default: main on unix, windows on windows)
         \\  -C, --contents      Extract directory contents directly into destination
@@ -66,7 +67,8 @@ pub fn printInstallHelp() void {
         \\  rice install nvim
         \\  rice install nvim -b main
         \\  rice install --bin sharkdp/bat
-        \\  rice install -b junegunn/fzf --save
+        \\  rice install --bin sharkdp/bat /usr/local/bin
+        \\  rice install --bin junegunn/fzf --save
         \\  rice install tmux --repo https://github.com/user/dotfiles
         \\  rice install config/tmux ~/.config/tmux --repo https://github.com/webpro/dotfiles
         \\  rice install .zshrc ~/.zshrc --repo https://github.com/user/dotfiles
@@ -77,17 +79,6 @@ pub fn printInstallHelp() void {
         \\  rice install --contents https://github.com/dharmx/walls/tree/main/wave ~/Downloads
         \\
     , .{});
-}
-
-fn confirmPrompt(prompt: []const u8) bool {
-    std.debug.print("{s}", .{prompt});
-    var buf: [128]u8 = undefined;
-    const n = std.Io.File.stdin().readStreaming(paths.getProcessIo(), &.{&buf}) catch return false;
-    if (n > 0) {
-        const trimmed = std.mem.trim(u8, buf[0..n], " \t\r\n");
-        return std.ascii.eqlIgnoreCase(trimmed, "y") or std.ascii.eqlIgnoreCase(trimmed, "yes");
-    }
-    return false;
 }
 
 const InstallItem = struct {
@@ -187,7 +178,7 @@ pub fn installDotfiles(allocator: Allocator, git: *git_mod.Git, homeDir: []const
                         return error.ContentsOnlyWithDirs;
                     }
                     const item_name = if (!contents_flag) gh_info.file_name else "";
-                    const dest = try paths.resolveInstallDestination(allocator, homeDir, gh_info.path, item_name, contents_flag);
+                    const dest = try paths.resolveInstallDestination(allocator, homeDir, ".", item_name, contents_flag);
                     try items.append(allocator, .{
                         .repo_path = try allocator.dupe(u8, gh_info.path),
                         .config_path = dest.config_path,
@@ -246,6 +237,7 @@ pub fn installDotfiles(allocator: Allocator, git: *git_mod.Git, homeDir: []const
     }
 
     var final_repo: ?[]u8 = null;
+
     defer if (final_repo) |r| allocator.free(r);
 
     if (repo_flag) |rf| {
@@ -309,8 +301,8 @@ pub fn installDotfiles(allocator: Allocator, git: *git_mod.Git, homeDir: []const
     try fs.makePath(tmp_dir_path);
     defer fs.deleteTreeAbsolute(tmp_dir_path) catch {};
 
-    try discovery.execGitInDir(allocator, tmp_dir_path, &[_][]const u8{"init"});
-    try discovery.execGitInDir(allocator, tmp_dir_path, &[_][]const u8{ "remote", "add", "origin", final_repo.? });
+    try discovery.execGitInDir(allocator, tmp_dir_path, &.{ "init" });
+    try discovery.execGitInDir(allocator, tmp_dir_path, &.{ "remote", "add", "origin", final_repo.? });
 
     var fetch_success = false;
     {
@@ -319,10 +311,10 @@ pub fn installDotfiles(allocator: Allocator, git: *git_mod.Git, homeDir: []const
         const fetch_sp = try ui.Spinner.start(allocator, fetch_msg);
         defer fetch_sp.stop();
 
-        if (discovery.execGitInDirQuiet(allocator, tmp_dir_path, &[_][]const u8{ "fetch", "--filter=blob:none", "--depth=1", "origin", branch_str })) |_| {
+        if (discovery.execGitInDirQuiet(allocator, tmp_dir_path, &.{ "fetch", "--filter=blob:none", "--depth=1", "origin", branch_str })) |_| {
             fetch_success = true;
         } else |_| {
-            if (discovery.execGitInDirQuiet(allocator, tmp_dir_path, &[_][]const u8{ "fetch", "--depth=1", "origin", branch_str })) |_| {
+            if (discovery.execGitInDirQuiet(allocator, tmp_dir_path, &.{ "fetch", "--depth=1", "origin", branch_str })) |_| {
                 fetch_success = true;
             } else |_| {}
         }
@@ -331,12 +323,12 @@ pub fn installDotfiles(allocator: Allocator, git: *git_mod.Git, homeDir: []const
             const fallbacks = [_][]const u8{ "main", "master", "HEAD" };
             for (fallbacks) |fb| {
                 if (std.mem.eql(u8, fb, branch_str)) continue;
-                if (discovery.execGitInDirQuiet(allocator, tmp_dir_path, &[_][]const u8{ "fetch", "--filter=blob:none", "--depth=1", "origin", fb })) |_| {
+                if (discovery.execGitInDirQuiet(allocator, tmp_dir_path, &.{ "fetch", "--filter=blob:none", "--depth=1", "origin", fb })) |_| {
                     fetch_success = true;
                     branch_str = fb;
                     break;
                 } else |_| {
-                    if (discovery.execGitInDirQuiet(allocator, tmp_dir_path, &[_][]const u8{ "fetch", "--depth=1", "origin", fb })) |_| {
+                    if (discovery.execGitInDirQuiet(allocator, tmp_dir_path, &.{ "fetch", "--depth=1", "origin", fb })) |_| {
                         fetch_success = true;
                         branch_str = fb;
                         break;
@@ -365,17 +357,17 @@ pub fn installDotfiles(allocator: Allocator, git: *git_mod.Git, homeDir: []const
 
     var has_remote_ini = false;
     if (items.items.len == 0) {
-        if (discovery.runGitInDirQuiet(allocator, tmp_dir_path, &[_][]const u8{ "cat-file", "-e", "FETCH_HEAD:.rice.ini" }, true)) |out| {
+        if (discovery.runGitInDirQuiet(allocator, tmp_dir_path, &.{ "cat-file", "-e", "FETCH_HEAD:.rice.ini" }, true)) |out| {
             allocator.free(out);
             has_remote_ini = true;
         } else |_| {}
 
         if (has_remote_ini) {
-            try discovery.execGitInDir(allocator, tmp_dir_path, &[_][]const u8{ "sparse-checkout", "init", "--no-cone" });
-            try discovery.execGitInDir(allocator, tmp_dir_path, &[_][]const u8{ "sparse-checkout", "set", "--no-cone", ".rice.ini" });
-            try discovery.execGitInDir(allocator, tmp_dir_path, &[_][]const u8{ "checkout", "--detach", "FETCH_HEAD" });
+            try discovery.execGitInDir(allocator, tmp_dir_path, &.{ "sparse-checkout", "init", "--no-cone" });
+            try discovery.execGitInDir(allocator, tmp_dir_path, &.{ "sparse-checkout", "set", "--no-cone", ".rice.ini" });
+            try discovery.execGitInDir(allocator, tmp_dir_path, &.{ "checkout", "--detach", "FETCH_HEAD" });
 
-            const remote_ini_p = try std.fs.path.join(allocator, &[_][]const u8{ tmp_dir_path, ".rice.ini" });
+            const remote_ini_p = try std.fs.path.join(allocator, &.{ tmp_dir_path, ".rice.ini" });
             defer allocator.free(remote_ini_p);
 
             const remote_cfg = try config.loadConfig(allocator, remote_ini_p);
@@ -396,10 +388,10 @@ pub fn installDotfiles(allocator: Allocator, git: *git_mod.Git, homeDir: []const
                 });
             }
         } else {
-            _ = discovery.execGitInDir(allocator, tmp_dir_path, &[_][]const u8{ "sparse-checkout", "disable" }) catch {};
-            try discovery.execGitInDir(allocator, tmp_dir_path, &[_][]const u8{ "checkout", "--detach", "FETCH_HEAD" });
+            _ = discovery.execGitInDir(allocator, tmp_dir_path, &.{ "sparse-checkout", "disable" }) catch {};
+            try discovery.execGitInDir(allocator, tmp_dir_path, &.{ "checkout", "--detach", "FETCH_HEAD" });
 
-            const ls_out = try discovery.runGitInDir(allocator, tmp_dir_path, &[_][]const u8{ "ls-tree", "-r", "--name-only", "FETCH_HEAD" });
+            const ls_out = try discovery.runGitInDir(allocator, tmp_dir_path, &.{ "ls-tree", "-r", "--name-only", "FETCH_HEAD" });
             defer allocator.free(ls_out);
 
             var it = std.mem.splitScalar(u8, ls_out, '\n');
@@ -427,9 +419,7 @@ pub fn installDotfiles(allocator: Allocator, git: *git_mod.Git, homeDir: []const
 
     var sparse_args: std.ArrayList([]const u8) = .empty;
     defer sparse_args.deinit(allocator);
-    try sparse_args.append(allocator, "sparse-checkout");
-    try sparse_args.append(allocator, "set");
-    try sparse_args.append(allocator, "--no-cone");
+    try sparse_args.appendSlice(allocator, &.{ "sparse-checkout", "set", "--no-cone" });
     if (has_remote_ini) try sparse_args.append(allocator, ".rice.ini");
     for (items.items) |item| try sparse_args.append(allocator, item.repo_path);
 
@@ -439,9 +429,9 @@ pub fn installDotfiles(allocator: Allocator, git: *git_mod.Git, homeDir: []const
         const dl_sp = try ui.Spinner.start(allocator, dl_msg);
         defer dl_sp.stop();
 
-        try discovery.execGitInDir(allocator, tmp_dir_path, &[_][]const u8{ "sparse-checkout", "init", "--no-cone" });
+        try discovery.execGitInDir(allocator, tmp_dir_path, &.{ "sparse-checkout", "init", "--no-cone" });
         try discovery.execGitInDir(allocator, tmp_dir_path, sparse_args.items);
-        try discovery.execGitInDir(allocator, tmp_dir_path, &[_][]const u8{ "checkout", "--detach", "FETCH_HEAD" });
+        try discovery.execGitInDir(allocator, tmp_dir_path, &.{ "checkout", "--detach", "FETCH_HEAD" });
     }
 
     if (!force_flag) {
@@ -460,7 +450,7 @@ pub fn installDotfiles(allocator: Allocator, git: *git_mod.Git, homeDir: []const
             if (conflict) {
                 const prompt = try std.fmt.allocPrint(allocator, "Destination '{s}' already exists.\nOverwrite? [y/N]: ", .{item.abs_path});
                 defer allocator.free(prompt);
-                if (!confirmPrompt(prompt)) {
+                if (!fs.promptConfirm(prompt)) {
                     std.debug.print("Installation cancelled.\n", .{});
                     return;
                 }
@@ -470,7 +460,7 @@ pub fn installDotfiles(allocator: Allocator, git: *git_mod.Git, homeDir: []const
 
     var installed_count: usize = 0;
     for (items.items) |item| {
-        const src_path = try std.fs.path.join(allocator, &[_][]const u8{ tmp_dir_path, item.repo_path });
+        const src_path = try std.fs.path.join(allocator, &.{ tmp_dir_path, item.repo_path });
         defer allocator.free(src_path);
 
         var is_dir = false;
@@ -503,9 +493,9 @@ pub fn installDotfiles(allocator: Allocator, git: *git_mod.Git, homeDir: []const
             defer dir.close(paths.getProcessIo());
             var it = dir.iterate();
             while (try it.next(paths.getProcessIo())) |entry| {
-                const sc = try std.fs.path.join(allocator, &[_][]const u8{ src_path, entry.name });
+                const sc = try std.fs.path.join(allocator, &.{ src_path, entry.name });
                 defer allocator.free(sc);
-                const dc = try std.fs.path.join(allocator, &[_][]const u8{ item.abs_path, entry.name });
+                const dc = try std.fs.path.join(allocator, &.{ item.abs_path, entry.name });
                 defer allocator.free(dc);
                 try fs.copyPath(allocator, sc, dc);
             }

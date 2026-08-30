@@ -21,7 +21,7 @@ pub fn runGitInDirQuiet(allocator: Allocator, dir: []const u8, args: []const []c
     var cmd_list: std.ArrayList([]const u8) = .empty;
     defer cmd_list.deinit(allocator);
     try cmd_list.append(allocator, "git");
-    for (args) |a| try cmd_list.append(allocator, a);
+    try cmd_list.appendSlice(allocator, args);
 
     var env_map = try std.process.Environ.createMap(paths.getProcessEnviron(), allocator);
     defer env_map.deinit();
@@ -39,9 +39,7 @@ pub fn runGitInDirQuiet(allocator: Allocator, dir: []const u8, args: []const []c
         if (!quiet) {
             var err_str = std.mem.trim(u8, res.stderr, " \t\r\n");
             if (err_str.len == 0) err_str = std.mem.trim(u8, res.stdout, " \t\r\n");
-            if (err_str.len > 0) {
-                std.debug.print("{s}\n", .{err_str});
-            }
+            if (err_str.len > 0) std.debug.print("{s}\n", .{err_str});
         }
         return error.GitInDirFailed;
     }
@@ -64,11 +62,7 @@ pub fn generateDiscoveryCandidates(allocator: Allocator, name: []const u8) !std.
     if (raw.len == 0) return list;
 
     var cleaned = raw;
-    if (std.mem.startsWith(u8, cleaned, "~/")) {
-        cleaned = cleaned[2..];
-    } else if (std.mem.startsWith(u8, cleaned, "~\\")) {
-        cleaned = cleaned[2..];
-    } else if (std.mem.startsWith(u8, cleaned, "./")) {
+    if (std.mem.startsWith(u8, cleaned, "~/") or std.mem.startsWith(u8, cleaned, "~\\") or std.mem.startsWith(u8, cleaned, "./")) {
         cleaned = cleaned[2..];
     } else if (std.mem.indexOf(u8, cleaned, "/.config/")) |idx| {
         cleaned = cleaned[idx + 1 ..];
@@ -89,21 +83,17 @@ pub fn generateDiscoveryCandidates(allocator: Allocator, name: []const u8) !std.
         fn add(al: Allocator, cand_list: *std.ArrayList(DiscoveredCandidate), seen_map: *std.StringHashMap(void), rpath: []const u8, dpath: []const u8) !void {
             if (seen_map.contains(rpath)) return;
             try seen_map.put(rpath, {});
-            try cand_list.append(al, DiscoveredCandidate{
+            try cand_list.append(al, .{
                 .repo_path = try al.dupe(u8, rpath),
                 .dest_config_path = try al.dupe(u8, dpath),
             });
         }
     }.add;
 
-    // 1. Direct path as specified (e.g., ".config/foot", "Documents/webapp.sh", ".bashrc")
-    {
-        const dp = try std.fmt.allocPrint(allocator, "~/{s}", .{cleaned});
-        defer allocator.free(dp);
-        try addCand(allocator, &list, &seen, cleaned, dp);
-    }
+    const dp0 = try std.fmt.allocPrint(allocator, "~/{s}", .{cleaned});
+    defer allocator.free(dp0);
+    try addCand(allocator, &list, &seen, cleaned, dp0);
 
-    // 2. If cleaned starts with ".config/", also try stripped and base name
     if (std.mem.startsWith(u8, cleaned, ".config/")) {
         const sub = cleaned[".config/".len..];
         if (sub.len > 0) {
@@ -112,7 +102,6 @@ pub fn generateDiscoveryCandidates(allocator: Allocator, name: []const u8) !std.
             try addCand(allocator, &list, &seen, sub, dp);
         }
     } else {
-        // If it does not start with .config/, try prepending .config/
         const rp = try std.fmt.allocPrint(allocator, ".config/{s}", .{cleaned});
         defer allocator.free(rp);
         const dp = try std.fmt.allocPrint(allocator, "~/.config/{s}", .{cleaned});
@@ -120,7 +109,6 @@ pub fn generateDiscoveryCandidates(allocator: Allocator, name: []const u8) !std.
         try addCand(allocator, &list, &seen, rp, dp);
     }
 
-    // 3. If single component name (like "foot" or "nvim" or "zshrc")
     var core_name = cleaned;
     if (std.mem.startsWith(u8, core_name, ".config/")) core_name = core_name[".config/".len..];
     if (std.mem.indexOfScalar(u8, core_name, '/') == null) {
@@ -128,19 +116,13 @@ pub fn generateDiscoveryCandidates(allocator: Allocator, name: []const u8) !std.
         if (std.mem.startsWith(u8, base_name, ".")) base_name = base_name[1..];
 
         if (base_name.len > 0) {
-            // .config/<base_name>
             const rp1 = try std.fmt.allocPrint(allocator, ".config/{s}", .{base_name});
             defer allocator.free(rp1);
             const dp1 = try std.fmt.allocPrint(allocator, "~/.config/{s}", .{base_name});
             defer allocator.free(dp1);
             try addCand(allocator, &list, &seen, rp1, dp1);
+            try addCand(allocator, &list, &seen, base_name, dp1);
 
-            // <base_name>
-            const dp2 = try std.fmt.allocPrint(allocator, "~/.config/{s}", .{base_name});
-            defer allocator.free(dp2);
-            try addCand(allocator, &list, &seen, base_name, dp2);
-
-            // .<base_name> -> ~/.<base_name>
             const rp3 = try std.fmt.allocPrint(allocator, ".{s}", .{base_name});
             defer allocator.free(rp3);
             const dp3 = try std.fmt.allocPrint(allocator, "~/." ++ "{s}", .{base_name});
@@ -162,17 +144,26 @@ pub const ResolvedRemoteConfig = struct {
     }
 };
 
+fn anyMatchEqlIgnoreCase(needles: []const []const u8, haystacks: []const []const u8) bool {
+    for (needles) |n| {
+        for (haystacks) |h| {
+            if (std.ascii.eqlIgnoreCase(n, h)) return true;
+        }
+    }
+    return false;
+}
+
 pub fn resolveRemoteConfig(allocator: Allocator, tmpDir: []const u8, _: []const u8, name: []const u8) !ResolvedRemoteConfig {
-    if (runGitInDirQuiet(allocator, tmpDir, &[_][]const u8{ "cat-file", "-e", "FETCH_HEAD:.rice.ini" }, true)) |out| {
+    if (runGitInDirQuiet(allocator, tmpDir, &.{ "cat-file", "-e", "FETCH_HEAD:.rice.ini" }, true)) |out| {
         allocator.free(out);
 
-        _ = execGitInDir(allocator, tmpDir, &[_][]const u8{ "sparse-checkout", "init", "--no-cone" }) catch {};
-        _ = execGitInDir(allocator, tmpDir, &[_][]const u8{ "sparse-checkout", "set", "--no-cone", ".rice.ini" }) catch {};
-        execGitInDir(allocator, tmpDir, &[_][]const u8{ "checkout", "--detach", "FETCH_HEAD" }) catch {
+        _ = execGitInDir(allocator, tmpDir, &.{ "sparse-checkout", "init", "--no-cone" }) catch {};
+        _ = execGitInDir(allocator, tmpDir, &.{ "sparse-checkout", "set", "--no-cone", ".rice.ini" }) catch {};
+        execGitInDir(allocator, tmpDir, &.{ "checkout", "--detach", "FETCH_HEAD" }) catch {
             return error.CheckoutRiceIniFailed;
         };
 
-        const ini_path = try std.fs.path.join(allocator, &[_][]const u8{ tmpDir, ".rice.ini" });
+        const ini_path = try std.fs.path.join(allocator, &.{ tmpDir, ".rice.ini" });
         defer allocator.free(ini_path);
 
         const remote_cfg = config.loadConfig(allocator, ini_path) catch return error.NoManagedPathsInRemoteRiceIni;
@@ -181,26 +172,22 @@ pub fn resolveRemoteConfig(allocator: Allocator, tmpDir: []const u8, _: []const 
             allocator.destroy(remote_cfg);
         }
 
-        if (remote_cfg.files.items.len == 0) {
-            return error.NoManagedPathsInRemoteRiceIni;
-        }
+        if (remote_cfg.files.items.len == 0) return error.NoManagedPathsInRemoteRiceIni;
 
         var matches: std.ArrayList([]const u8) = .empty;
         defer matches.deinit(allocator);
 
         const name_raw = std.mem.trim(u8, name, " \t\r\n");
         var name_clean = name_raw;
-        if (std.mem.startsWith(u8, name_clean, "~/")) {
-            name_clean = name_clean[2..];
-        } else if (std.mem.startsWith(u8, name_clean, "./")) {
+        if (std.mem.startsWith(u8, name_clean, "~/") or std.mem.startsWith(u8, name_clean, "./")) {
             name_clean = name_clean[2..];
         } else if (std.mem.indexOf(u8, name_clean, "/.config/")) |idx| {
             name_clean = name_clean[idx + 1 ..];
         }
 
         const name_base = std.fs.path.basename(name_clean);
-        var name_base_no_dot = name_base;
-        if (std.mem.startsWith(u8, name_base_no_dot, ".")) name_base_no_dot = name_base_no_dot[1..];
+        const name_base_no_dot = if (std.mem.startsWith(u8, name_base, ".")) name_base[1..] else name_base;
+        const name_candidates = [_][]const u8{ name_raw, name_clean, name_base, name_base_no_dot };
 
         for (remote_cfg.files.items) |f| {
             const norm = try config.normalizeConfigFileEntry(allocator, f);
@@ -209,29 +196,11 @@ pub fn resolveRemoteConfig(allocator: Allocator, tmpDir: []const u8, _: []const 
 
             const git_p = if (std.mem.startsWith(u8, norm, "~/")) norm[2..] else norm;
             const base = std.fs.path.basename(git_p);
-            var base_no_dot = base;
-            if (std.mem.startsWith(u8, base_no_dot, ".")) base_no_dot = base_no_dot[1..];
+            const base_no_dot = if (std.mem.startsWith(u8, base, ".")) base[1..] else base;
+            const target_fields = [_][]const u8{ norm, git_p, base, base_no_dot };
 
-            var is_match = (std.mem.eql(u8, name_raw, norm) or
-                std.mem.eql(u8, name_clean, norm) or
-                std.mem.eql(u8, name_clean, git_p) or
-                std.mem.eql(u8, name_clean, base) or
-                std.mem.eql(u8, name_clean, base_no_dot) or
-                std.mem.eql(u8, name_base, base) or
-                std.mem.eql(u8, name_base, base_no_dot) or
-                std.mem.eql(u8, name_base_no_dot, base) or
-                std.mem.eql(u8, name_base_no_dot, base_no_dot) or
-                std.ascii.eqlIgnoreCase(name_raw, norm) or
-                std.ascii.eqlIgnoreCase(name_clean, norm) or
-                std.ascii.eqlIgnoreCase(name_clean, git_p) or
-                std.ascii.eqlIgnoreCase(name_clean, base) or
-                std.ascii.eqlIgnoreCase(name_clean, base_no_dot) or
-                std.ascii.eqlIgnoreCase(name_base, base) or
-                std.ascii.eqlIgnoreCase(name_base, base_no_dot) or
-                std.ascii.eqlIgnoreCase(name_base_no_dot, base) or
-                std.ascii.eqlIgnoreCase(name_base_no_dot, base_no_dot));
+            var is_match = anyMatchEqlIgnoreCase(&name_candidates, &target_fields);
 
-            // Also match if git_p starts with name_clean as directory (e.g. name="foot" or ".config/foot", git_p=".config/foot/foot.ini")
             if (!is_match) {
                 var norm_no_tilde = norm;
                 if (std.mem.startsWith(u8, norm_no_tilde, "~/")) norm_no_tilde = norm_no_tilde[2..];
@@ -243,24 +212,14 @@ pub fn resolveRemoteConfig(allocator: Allocator, tmpDir: []const u8, _: []const 
                     is_match = true;
                 }
 
-                // Check directory containing the file (e.g. git_p=".config/foot/foot.ini" -> dir="foot" or ".config/foot")
                 if (std.fs.path.dirname(git_p)) |parent_dir| {
                     const parent_base = std.fs.path.basename(parent_dir);
-                    if (std.mem.eql(u8, name_clean, parent_dir) or
-                        std.mem.eql(u8, name_clean, parent_base) or
-                        std.ascii.eqlIgnoreCase(name_clean, parent_dir) or
-                        std.ascii.eqlIgnoreCase(name_clean, parent_base) or
-                        std.ascii.eqlIgnoreCase(name_base, parent_base) or
-                        std.ascii.eqlIgnoreCase(name_base_no_dot, parent_base))
-                    {
-                        is_match = true;
-                    }
+                    const parent_fields = [_][]const u8{ parent_dir, parent_base };
+                    if (anyMatchEqlIgnoreCase(&name_candidates, &parent_fields)) is_match = true;
                 }
             }
 
-            if (is_match) {
-                try matches.append(allocator, f);
-            }
+            if (is_match) try matches.append(allocator, f);
         }
 
         if (matches.items.len == 0) {
@@ -269,9 +228,7 @@ pub fn resolveRemoteConfig(allocator: Allocator, tmpDir: []const u8, _: []const 
         }
         if (matches.items.len > 1) {
             std.debug.print("Error: configuration name is ambiguous: {s}\nMatching paths:\n", .{name});
-            for (matches.items) |m| {
-                std.debug.print("  {s}\n", .{m});
-            }
+            for (matches.items) |m| std.debug.print("  {s}\n", .{m});
             return error.ConfigAmbiguous;
         }
 
@@ -301,7 +258,7 @@ pub fn resolveRemoteConfig(allocator: Allocator, tmpDir: []const u8, _: []const 
     for (candidates.items) |c| {
         const spec = try std.fmt.allocPrint(allocator, "FETCH_HEAD:{s}", .{c.repo_path});
         defer allocator.free(spec);
-        if (runGitInDirQuiet(allocator, tmpDir, &[_][]const u8{ "cat-file", "-e", spec }, true)) |out| {
+        if (runGitInDirQuiet(allocator, tmpDir, &.{ "cat-file", "-e", spec }, true)) |out| {
             allocator.free(out);
             try matches.append(allocator, c);
         } else |_| {}
@@ -313,9 +270,7 @@ pub fn resolveRemoteConfig(allocator: Allocator, tmpDir: []const u8, _: []const 
     }
     if (matches.items.len > 1) {
         std.debug.print("Error: configuration name is ambiguous: {s}\nMatching paths:\n", .{name});
-        for (matches.items) |m| {
-            std.debug.print("  {s}\n", .{m.repo_path});
-        }
+        for (matches.items) |m| std.debug.print("  {s}\n", .{m.repo_path});
         return error.ConfigAmbiguous;
     }
 
@@ -324,3 +279,4 @@ pub fn resolveRemoteConfig(allocator: Allocator, tmpDir: []const u8, _: []const 
         .dest_config_path = try allocator.dupe(u8, matches.items[0].dest_config_path),
     };
 }
+

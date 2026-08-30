@@ -14,19 +14,15 @@ pub fn matchAsset(name: []const u8, target_os: []const u8, target_arch: []const 
         if (std.mem.endsWith(u8, n, ext)) return false;
     }
 
-    if (std.mem.indexOf(u8, n, "checksum") != null or std.mem.indexOf(u8, n, "source") != null) {
-        return false;
-    }
+    if (std.mem.indexOf(u8, n, "checksum") != null or std.mem.indexOf(u8, n, "source") != null) return false;
 
     const os_match = (std.mem.indexOf(u8, n, target_os) != null) or
         (std.mem.eql(u8, target_os, "darwin") and std.mem.indexOf(u8, n, "macos") != null);
     if (!os_match) return false;
 
-    const arch_match = (std.mem.indexOf(u8, n, target_arch) != null) or
+    return (std.mem.indexOf(u8, n, target_arch) != null) or
         (std.mem.eql(u8, target_arch, "amd64") and std.mem.indexOf(u8, n, "x86_64") != null) or
         (std.mem.eql(u8, target_arch, "arm64") and std.mem.indexOf(u8, n, "aarch64") != null);
-
-    return arch_match;
 }
 
 pub const GitHubReleaseAsset = struct {
@@ -48,7 +44,7 @@ pub fn fetchGitHubReleaseAsset(allocator: Allocator, owner: []const u8, repo: []
 
     var args: std.ArrayList([]const u8) = .empty;
     defer args.deinit(allocator);
-    try args.appendSlice(allocator, &[_][]const u8{ "curl", "-fsSL", "-H", "Accept: application/vnd.github.v3+json", "-H", "User-Agent: rice-bin" });
+    try args.appendSlice(allocator, &.{ "curl", "-fsSL", "-H", "Accept: application/vnd.github.v3+json", "-H", "User-Agent: rice-bin" });
 
     var token_header: ?[]u8 = null;
     defer if (token_header) |th| allocator.free(th);
@@ -56,17 +52,17 @@ pub fn fetchGitHubReleaseAsset(allocator: Allocator, owner: []const u8, repo: []
         defer allocator.free(tok);
         if (tok.len > 0) {
             token_header = try std.fmt.allocPrint(allocator, "Authorization: Bearer {s}", .{tok});
-            try args.appendSlice(allocator, &[_][]const u8{ "-H", token_header.? });
+            try args.appendSlice(allocator, &.{ "-H", token_header.? });
         }
     } else |_| {}
 
     try args.append(allocator, api_url);
 
-    const res = try std.process.run(allocator, paths.getProcessIo(), .{
-        .argv = args.items,
-    });
-    defer allocator.free(res.stdout);
-    defer allocator.free(res.stderr);
+    const res = try std.process.run(allocator, paths.getProcessIo(), .{ .argv = args.items });
+    defer {
+        allocator.free(res.stdout);
+        allocator.free(res.stderr);
+    }
 
     if (res.term != .exited or res.term.exited != 0) {
         std.debug.print("failed to fetch release from GitHub for {s}/{s}: {s}\n", .{ owner, repo, res.stderr });
@@ -96,3 +92,4 @@ pub fn fetchGitHubReleaseAsset(allocator: Allocator, owner: []const u8, repo: []
 
     return error.NoMatchingAssetFound;
 }
+

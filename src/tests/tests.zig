@@ -240,3 +240,18 @@ test "bin: parse binary source" {
 
     try std.testing.expectError(error.InvalidSource, bin.parseBinarySource(allocator, "nonexistent-binary-name-xyz", "/home/test"));
 }
+
+test "bin: options with destination" {
+    const opts1 = bin.InstallBinOptions{
+        .source = "https://github.com/h-jangra/ghost.sh/releases/download/v0.2.0/ghost-x86_64-linux",
+        .dest = "/usr/local/bin/ghost/ghost",
+    };
+    try std.testing.expectEqualStrings("/usr/local/bin/ghost/ghost", opts1.dest);
+    try std.testing.expectEqualStrings("https://github.com/h-jangra/ghost.sh/releases/download/v0.2.0/ghost-x86_64-linux", opts1.source);
+
+    const opts2 = bin.InstallBinOptions{
+        .source = "sharkdp/bat",
+        .dest = ".",
+    };
+    try std.testing.expectEqualStrings(".", opts2.dest);
+}

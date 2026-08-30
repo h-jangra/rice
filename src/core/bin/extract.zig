@@ -6,27 +6,20 @@ const paths = @import("../paths/mod.zig");
 pub fn isExecutableBinary(data: []const u8) bool {
     if (data.len >= 4 and std.mem.eql(u8, data[0..4], "\x7fELF")) return true;
     if (data.len >= 2 and std.mem.eql(u8, data[0..2], "MZ")) return true;
-    if (data.len >= 4 and (std.mem.eql(u8, data[0..4], &[_]u8{ 0xfe, 0xed, 0xfa, 0xce }) or
-        std.mem.eql(u8, data[0..4], &[_]u8{ 0xfe, 0xed, 0xfa, 0xcf }) or
-        std.mem.eql(u8, data[0..4], &[_]u8{ 0xce, 0xfa, 0xed, 0xfe }) or
-        std.mem.eql(u8, data[0..4], &[_]u8{ 0xcf, 0xfa, 0xed, 0xfe }) or
-        std.mem.eql(u8, data[0..4], &[_]u8{ 0xca, 0xfe, 0xba, 0xbe }) or
-        std.mem.eql(u8, data[0..4], &[_]u8{ 0xbe, 0xba, 0xfe, 0xca })))
+    if (data.len >= 4 and (std.mem.eql(u8, data[0..4], &.{ 0xfe, 0xed, 0xfa, 0xce }) or
+        std.mem.eql(u8, data[0..4], &.{ 0xfe, 0xed, 0xfa, 0xcf }) or
+        std.mem.eql(u8, data[0..4], &.{ 0xce, 0xfa, 0xed, 0xfe }) or
+        std.mem.eql(u8, data[0..4], &.{ 0xcf, 0xfa, 0xed, 0xfe }) or
+        std.mem.eql(u8, data[0..4], &.{ 0xca, 0xfe, 0xba, 0xbe }) or
+        std.mem.eql(u8, data[0..4], &.{ 0xbe, 0xba, 0xfe, 0xca })))
     {
         return true;
     }
     if (data.len >= 2 and std.mem.eql(u8, data[0..2], "#!")) {
-        const sample_len = @min(data.len, 256);
-        const sample = data[0..sample_len];
-        if (std.mem.indexOf(u8, sample, "sh") != null or
-            std.mem.indexOf(u8, sample, "bash") != null or
-            std.mem.indexOf(u8, sample, "python") != null or
-            std.mem.indexOf(u8, sample, "node") != null or
-            std.mem.indexOf(u8, sample, "perl") != null or
-            std.mem.indexOf(u8, sample, "ruby") != null or
-            std.mem.indexOf(u8, sample, "env") != null)
-        {
-            return true;
+        const sample = data[0..@min(data.len, 256)];
+        const interpreters = [_][]const u8{ "sh", "bash", "python", "node", "perl", "ruby", "env" };
+        for (interpreters) |interp| {
+            if (std.mem.indexOf(u8, sample, interp) != null) return true;
         }
     }
     return false;
@@ -98,7 +91,7 @@ fn collectCandidates(allocator: Allocator, root_dir: []const u8, rel_sub_path: [
     const full_dir = if (rel_sub_path.len == 0)
         try allocator.dupe(u8, root_dir)
     else
-        try std.fs.path.join(allocator, &[_][]const u8{ root_dir, rel_sub_path });
+        try std.fs.path.join(allocator, &.{ root_dir, rel_sub_path });
     defer allocator.free(full_dir);
 
     var dir = fs.openDirAbsolute(full_dir, .{ .iterate = true }) catch return;
@@ -109,16 +102,15 @@ fn collectCandidates(allocator: Allocator, root_dir: []const u8, rel_sub_path: [
         const child_rel = if (rel_sub_path.len == 0)
             try allocator.dupe(u8, entry.name)
         else
-            try std.fs.path.join(allocator, &[_][]const u8{ rel_sub_path, entry.name });
+            try std.fs.path.join(allocator, &.{ rel_sub_path, entry.name });
         defer allocator.free(child_rel);
 
-        const is_dir = entry.kind == .directory;
-        if (is_dir) {
+        if (entry.kind == .directory) {
             try collectCandidates(allocator, root_dir, child_rel, candidates);
         } else {
             const base = std.fs.path.basename(child_rel);
             if (!isIgnoredCandidate(child_rel, false, base)) {
-                const full = try std.fs.path.join(allocator, &[_][]const u8{ root_dir, child_rel });
+                const full = try std.fs.path.join(allocator, &.{ root_dir, child_rel });
                 try candidates.append(allocator, full);
             }
         }
@@ -134,22 +126,12 @@ pub fn findExecutable(allocator: Allocator, extractDir: []const u8, customName: 
 
     try collectCandidates(allocator, extractDir, "", &candidates);
 
-    if (candidates.items.len == 0) {
-        return error.NoExecutableFoundInArchive;
-    }
+    if (candidates.items.len == 0) return error.NoExecutableFoundInArchive;
 
-    if (customName.len > 0) {
-        for (candidates.items) |c| {
-            if (matchCandidateName(c, customName)) {
-                return allocator.dupe(u8, c);
-            }
-        }
-    }
-
-    if (fallbackName.len > 0) {
-        for (candidates.items) |c| {
-            if (matchCandidateName(c, fallbackName)) {
-                return allocator.dupe(u8, c);
+    for ([_][]const u8{ customName, fallbackName }) |name| {
+        if (name.len > 0) {
+            for (candidates.items) |c| {
+                if (matchCandidateName(c, name)) return allocator.dupe(u8, c);
             }
         }
     }
@@ -162,32 +144,19 @@ pub fn findExecutable(allocator: Allocator, extractDir: []const u8, customName: 
         if (fs.openFileAbsolute(c, .{})) |f| {
             defer f.close(paths.getProcessIo());
             if (f.stat(paths.getProcessIo())) |st| {
-                if ((@intFromEnum(st.permissions) & 0o111) != 0) {
-                    is_exec = true;
-                }
+                if ((@intFromEnum(st.permissions) & 0o111) != 0) is_exec = true;
             } else |_| {}
             if (!is_exec) {
                 var header: [512]u8 = undefined;
                 const n = f.readPositional(paths.getProcessIo(), &.{&header}, 0) catch 0;
-                if (isExecutableBinary(header[0..n])) {
-                    is_exec = true;
-                }
+                if (isExecutableBinary(header[0..n])) is_exec = true;
             }
         } else |_| {}
-        if (is_exec) {
-            try exec_candidates.append(allocator, c);
-        }
+        if (is_exec) try exec_candidates.append(allocator, c);
     }
 
-    if (exec_candidates.items.len > 0 and exec_candidates.items.len < candidates.items.len) {
-        if (exec_candidates.items.len == 1) {
-            return allocator.dupe(u8, exec_candidates.items[0]);
-        }
-    }
-
-    if (candidates.items.len == 1) {
-        return allocator.dupe(u8, candidates.items[0]);
-    }
+    if (exec_candidates.items.len == 1) return allocator.dupe(u8, exec_candidates.items[0]);
+    if (candidates.items.len == 1) return allocator.dupe(u8, candidates.items[0]);
 
     return error.MultipleBinariesFound;
 }
@@ -196,9 +165,9 @@ pub fn formatBinaryTree(allocator: Allocator, archiveName: []const u8, paths_lis
     var buf: std.ArrayList(u8) = .empty;
     defer buf.deinit(allocator);
 
-    const first_line = try std.fmt.allocPrint(allocator, "  {s}\n", .{archiveName});
-    defer allocator.free(first_line);
-    try buf.appendSlice(allocator, first_line);
+    try buf.appendSlice(allocator, "  ");
+    try buf.appendSlice(allocator, archiveName);
+    try buf.appendSlice(allocator, "\n");
 
     for (paths_list, 0..) |p, i| {
         const is_last = (i + 1 == paths_list.len);
@@ -207,7 +176,7 @@ pub fn formatBinaryTree(allocator: Allocator, archiveName: []const u8, paths_lis
         defer allocator.free(item_line);
         try buf.appendSlice(allocator, item_line);
     }
-    return try buf.toOwnedSlice(allocator);
+    return buf.toOwnedSlice(allocator);
 }
 
 pub fn promptBinarySelection(allocator: Allocator, archiveName: []const u8, binaries: []const []const u8) ![]const u8 {
@@ -236,3 +205,4 @@ pub fn promptBinarySelection(allocator: Allocator, archiveName: []const u8, bina
         }
     }
 }
+

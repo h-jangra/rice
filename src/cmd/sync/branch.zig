@@ -78,9 +78,7 @@ pub fn switchCmd(allocator: Allocator, git: *git_mod.Git, homeDir: []const u8, a
         old_cfg.deinit();
         allocator.destroy(old_cfg);
     } else |_| {
-        if (git.getRemote()) |r| {
-            existing_remote = r;
-        } else |_| {}
+        if (git.getRemote()) |r| existing_remote = r else |_| {}
     }
     defer if (existing_remote) |r| allocator.free(r);
 
@@ -88,11 +86,11 @@ pub fn switchCmd(allocator: Allocator, git: *git_mod.Git, homeDir: []const u8, a
     if (git.getHEADFileContent(".rice.ini")) |ini_bytes| {
         defer allocator.free(ini_bytes);
         if (ini_bytes.len > 0) {
-            const file = fs.createFileAbsolute(ini_path, .{ .permissions = @enumFromInt(0o644) }) catch null;
-            if (file) |f| {
-                f.writePositionalAll(paths.getProcessIo(), ini_bytes, 0) catch {};
-                f.close(paths.getProcessIo());
-            }
+            if (fs.createFileAbsolute(ini_path, .{ .permissions = @enumFromInt(0o644) })) |f| {
+                var file = f;
+                file.writePositionalAll(paths.getProcessIo(), ini_bytes, 0) catch {};
+                file.close(paths.getProcessIo());
+            } else |_| {}
             cfg = config.loadConfig(allocator, ini_path) catch blk: {
                 const new_c = try allocator.create(config.Config);
                 new_c.* = config.Config.init(allocator);
@@ -106,9 +104,7 @@ pub fn switchCmd(allocator: Allocator, git: *git_mod.Git, homeDir: []const u8, a
         cfg = try allocator.create(config.Config);
         cfg.* = config.Config.init(allocator);
 
-        // If the branch in HEAD does not contain .rice.ini, populate [files]
-        // with all tracked files in HEAD so they are preserved and tracked in .rice.ini
-        if (git.listRefFiles("HEAD", &[_][]const u8{})) |head_files| {
+        if (git.listRefFiles("HEAD", &.{})) |head_files| {
             var hf_mut = head_files;
             defer {
                 for (hf_mut.items) |hf| allocator.free(hf);
@@ -154,8 +150,7 @@ pub fn branchesCmd(allocator: Allocator, git: *git_mod.Git, args: []const []cons
     var lines = std.mem.splitScalar(u8, out, '\n');
     while (lines.next()) |line| {
         const clean = std.mem.trimEnd(u8, line, "\r");
-        if (std.mem.trim(u8, clean, " \t").len > 0) {
-            std.debug.print("{s}\n", .{clean});
-        }
+        if (std.mem.trim(u8, clean, " \t").len > 0) std.debug.print("{s}\n", .{clean});
     }
 }
+

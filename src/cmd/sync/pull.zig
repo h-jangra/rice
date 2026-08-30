@@ -24,7 +24,7 @@ pub fn pullCmd(allocator: Allocator, git: *git_mod.Git, homeDir: []const u8, arg
         return err;
     };
 
-    const remote_head = git.output(&[_][]const u8{ "rev-parse", "FETCH_HEAD" }) catch {
+    const remote_head = git.output(&.{ "rev-parse", "FETCH_HEAD" }) catch {
         std.debug.print("Error: failed to resolve remote changes from FETCH_HEAD.\n", .{});
         return error.FetchHeadNotFound;
     };
@@ -34,7 +34,7 @@ pub fn pullCmd(allocator: Allocator, git: *git_mod.Git, homeDir: []const u8, arg
     defer allocator.free(ini_path);
 
     if (git.hasCommits()) {
-        const local_head = git.output(&[_][]const u8{ "rev-parse", "HEAD" }) catch "";
+        const local_head = git.output(&.{ "rev-parse", "HEAD" }) catch "";
         defer allocator.free(local_head);
 
         if (std.mem.eql(u8, local_head, remote_head)) {
@@ -42,7 +42,7 @@ pub fn pullCmd(allocator: Allocator, git: *git_mod.Git, homeDir: []const u8, arg
             return;
         }
 
-        const diff_raw = git.output(&[_][]const u8{ "diff", "--name-only", "HEAD", "FETCH_HEAD" }) catch "";
+        const diff_raw = git.output(&.{ "diff", "--name-only", "HEAD", "FETCH_HEAD" }) catch "";
         defer allocator.free(diff_raw);
 
         var conflicts: std.ArrayList([]const u8) = .empty;
@@ -59,7 +59,7 @@ pub fn pullCmd(allocator: Allocator, git: *git_mod.Git, homeDir: []const u8, arg
                 const rel_file = std.mem.trim(u8, line, " \t\r");
                 if (rel_file.len == 0) continue;
 
-                const full_p = try std.fs.path.join(allocator, &[_][]const u8{ homeDir, rel_file });
+                const full_p = try std.fs.path.join(allocator, &.{ homeDir, rel_file });
                 defer allocator.free(full_p);
 
                 if (fs.openFileAbsolute(full_p, .{})) |f| {
@@ -89,29 +89,27 @@ pub fn pullCmd(allocator: Allocator, git: *git_mod.Git, homeDir: []const u8, arg
 
         if (conflicts.items.len > 0 and !force) {
             std.debug.print("Error: incoming remote changes conflict with local uncommitted modifications in:\n", .{});
-            for (conflicts.items) |c| {
-                std.debug.print("  {s}\n", .{c});
-            }
+            for (conflicts.items) |c| std.debug.print("  {s}\n", .{c});
             std.debug.print("\nPull aborted to prevent overwriting your local files.\nOptions:\n  - Commit your local changes: rice commit <message>\n  - Review changes:            rice diff\n  - Discard local changes:     rice restore\n  - Force pull (overwrite):    rice pull -f\n", .{});
             return error.PullConflict;
         }
 
         if (force) {
             for (conflicts.items) |c| {
-                const full_p = try std.fs.path.join(allocator, &[_][]const u8{ homeDir, c });
+                const full_p = try std.fs.path.join(allocator, &.{ homeDir, c });
                 defer allocator.free(full_p);
                 if (fs.backupFile(allocator, full_p)) |bak| {
                     defer allocator.free(bak);
                     std.debug.print("Backed up '{s}' to {s}\n", .{ c, std.fs.path.basename(bak) });
                 } else |_| {}
-                _ = git.checkoutHEAD(&[_][]const u8{c}) catch {};
+                _ = git.checkoutHEAD(&.{c}) catch {};
             }
         }
 
         var local_cfg: ?*config.Config = null;
         if (ini_has_local_mods) {
             local_cfg = config.loadConfig(allocator, ini_path) catch null;
-            _ = git.checkoutHEAD(&[_][]const u8{".rice.ini"}) catch {};
+            _ = git.checkoutHEAD(&.{".rice.ini"}) catch {};
         }
         defer if (local_cfg) |lc| {
             lc.deinit();
@@ -120,7 +118,7 @@ pub fn pullCmd(allocator: Allocator, git: *git_mod.Git, homeDir: []const u8, arg
 
         if (git.merge("FETCH_HEAD")) {} else |err| {
             if (force) {
-                _ = git.run(&[_][]const u8{ "reset", "--hard", "FETCH_HEAD" }) catch |r_err| {
+                _ = git.run(&.{ "reset", "--hard", "FETCH_HEAD" }) catch |r_err| {
                     std.debug.print("Error: failed to force merge remote changes: {s}\n", .{@errorName(r_err)});
                     return r_err;
                 };
@@ -133,11 +131,11 @@ pub fn pullCmd(allocator: Allocator, git: *git_mod.Git, homeDir: []const u8, arg
         if (git.getHEADFileContent(".rice.ini")) |ini_bytes| {
             defer allocator.free(ini_bytes);
             if (ini_bytes.len > 0) {
-                const file = fs.createFileAbsolute(ini_path, .{ .permissions = @enumFromInt(0o644) }) catch null;
-                if (file) |f| {
-                    f.writePositionalAll(paths.getProcessIo(), ini_bytes, 0) catch {};
-                    f.close(paths.getProcessIo());
-                }
+                if (fs.createFileAbsolute(ini_path, .{ .permissions = @enumFromInt(0o644) })) |f| {
+                    var file = f;
+                    file.writePositionalAll(paths.getProcessIo(), ini_bytes, 0) catch {};
+                    file.close(paths.getProcessIo());
+                } else |_| {}
             }
         } else |_| {
             var cfg = config.loadConfig(allocator, ini_path) catch blk: {
@@ -150,7 +148,7 @@ pub fn pullCmd(allocator: Allocator, git: *git_mod.Git, homeDir: []const u8, arg
                 allocator.destroy(cfg);
             }
 
-            if (git.listRefFiles("HEAD", &[_][]const u8{})) |head_files| {
+            if (git.listRefFiles("HEAD", &.{})) |head_files| {
                 var hf_mut = head_files;
                 defer {
                     for (hf_mut.items) |hf| allocator.free(hf);
@@ -173,7 +171,7 @@ pub fn pullCmd(allocator: Allocator, git: *git_mod.Git, homeDir: []const u8, arg
             _ = config.saveConfig(allocator, ini_path, cfg) catch {};
         }
     } else {
-        var incoming_files = git.listRefFiles("FETCH_HEAD", &[_][]const u8{}) catch std.ArrayList([]u8).empty;
+        var incoming_files = git.listRefFiles("FETCH_HEAD", &.{}) catch std.ArrayList([]u8).empty;
         defer {
             for (incoming_files.items) |f| allocator.free(f);
             incoming_files.deinit(allocator);
@@ -187,7 +185,7 @@ pub fn pullCmd(allocator: Allocator, git: *git_mod.Git, homeDir: []const u8, arg
 
         for (incoming_files.items) |rel_file| {
             if (std.mem.eql(u8, rel_file, ".rice.ini")) continue;
-            const full_p = try std.fs.path.join(allocator, &[_][]const u8{ homeDir, rel_file });
+            const full_p = try std.fs.path.join(allocator, &.{ homeDir, rel_file });
             defer allocator.free(full_p);
 
             if (fs.openFileAbsolute(full_p, .{})) |f| {
@@ -206,16 +204,14 @@ pub fn pullCmd(allocator: Allocator, git: *git_mod.Git, homeDir: []const u8, arg
 
         if (conflicts.items.len > 0 and !force) {
             std.debug.print("Error: incoming remote changes conflict with local uncommitted modifications in:\n", .{});
-            for (conflicts.items) |c| {
-                std.debug.print("  {s}\n", .{c});
-            }
+            for (conflicts.items) |c| std.debug.print("  {s}\n", .{c});
             std.debug.print("\nPull aborted to prevent overwriting your local files.\nOptions:\n  - Review changes:            rice diff\n  - Discard local changes:     rice restore\n  - Force pull (overwrite):    rice pull -f\n", .{});
             return error.PullConflict;
         }
 
         if (force) {
             for (conflicts.items) |c| {
-                const full_p = try std.fs.path.join(allocator, &[_][]const u8{ homeDir, c });
+                const full_p = try std.fs.path.join(allocator, &.{ homeDir, c });
                 defer allocator.free(full_p);
                 if (fs.backupFile(allocator, full_p)) |bak| {
                     defer allocator.free(bak);
@@ -233,20 +229,20 @@ pub fn pullCmd(allocator: Allocator, git: *git_mod.Git, homeDir: []const u8, arg
 
         const symref = try std.fmt.allocPrint(allocator, "refs/heads/{s}", .{branch});
         defer allocator.free(symref);
-        _ = git.run(&[_][]const u8{ "symbolic-ref", "HEAD", symref }) catch {};
-        _ = git.run(&[_][]const u8{ "update-ref", symref, "FETCH_HEAD" }) catch {};
+        _ = git.run(&.{ "symbolic-ref", "HEAD", symref }) catch {};
+        _ = git.run(&.{ "update-ref", symref, "FETCH_HEAD" }) catch {};
         const upstream_arg = try std.fmt.allocPrint(allocator, "--set-upstream-to=origin/{s}", .{branch});
         defer allocator.free(upstream_arg);
-        _ = git.run(&[_][]const u8{ "branch", upstream_arg, branch }) catch {};
+        _ = git.run(&.{ "branch", upstream_arg, branch }) catch {};
 
         if (git.getHEADFileContent(".rice.ini")) |ini_bytes| {
             defer allocator.free(ini_bytes);
             if (ini_bytes.len > 0) {
-                const file = fs.createFileAbsolute(ini_path, .{ .permissions = @enumFromInt(0o644) }) catch null;
-                if (file) |f| {
-                    f.writePositionalAll(paths.getProcessIo(), ini_bytes, 0) catch {};
-                    f.close(paths.getProcessIo());
-                }
+                if (fs.createFileAbsolute(ini_path, .{ .permissions = @enumFromInt(0o644) })) |f| {
+                    var file = f;
+                    file.writePositionalAll(paths.getProcessIo(), ini_bytes, 0) catch {};
+                    file.close(paths.getProcessIo());
+                } else |_| {}
             }
         } else |_| {}
     }

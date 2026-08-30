@@ -1,19 +1,13 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const clean = @import("clean.zig");
-
 const builtin = @import("builtin");
 
 var process_io: ?std.Io = null;
 var process_environ: ?std.process.Environ = null;
 
-pub fn setProcessIo(io: std.Io) void {
-    process_io = io;
-}
-
-pub fn setProcessEnviron(env: std.process.Environ) void {
-    process_environ = env;
-}
+pub fn setProcessIo(io: std.Io) void { process_io = io; }
+pub fn setProcessEnviron(env: std.process.Environ) void { process_environ = env; }
 
 pub fn getProcessIo() std.Io {
     if (process_io) |io| return io;
@@ -23,37 +17,22 @@ pub fn getProcessIo() std.Io {
 
 pub fn getProcessEnviron() std.process.Environ {
     if (process_environ) |env| return env;
-    return .{
-        .block = switch (builtin.os.tag) {
-            .windows => .global,
-            else => .empty,
-        },
-    };
+    return .{ .block = if (builtin.os.tag == .windows) .global else .empty };
 }
 
 pub fn getHomeDir(allocator: Allocator) ![]u8 {
     const env = getProcessEnviron();
-    if (std.process.Environ.getAlloc(env, allocator, "HOME")) |h| {
-        // Clean trailing slash
-        const trimmed = std.mem.trimEnd(u8, h, "/\\");
-        if (trimmed.len < h.len) {
-            const res = try allocator.dupe(u8, trimmed);
-            allocator.free(h);
-            return res;
-        }
-        return h;
-    } else |_| {}
-
-    if (std.process.Environ.getAlloc(env, allocator, "USERPROFILE")) |h| {
-        const trimmed = std.mem.trimEnd(u8, h, "/\\");
-        if (trimmed.len < h.len) {
-            const res = try allocator.dupe(u8, trimmed);
-            allocator.free(h);
-            return res;
-        }
-        return h;
-    } else |_| {}
-
+    for ([_][]const u8{ "HOME", "USERPROFILE" }) |var_name| {
+        if (std.process.Environ.getAlloc(env, allocator, var_name)) |h| {
+            const trimmed = std.mem.trimEnd(u8, h, "/\\");
+            if (trimmed.len < h.len) {
+                const res = try allocator.dupe(u8, trimmed);
+                allocator.free(h);
+                return res;
+            }
+            return h;
+        } else |_| {}
+    }
     return error.HomeDirNotFound;
 }
 
@@ -75,19 +54,12 @@ pub fn resolveUserPath(allocator: Allocator, homeDir: []const u8, input: []const
         defer allocator.free(joined);
         return clean.cleanPath(allocator, joined);
     }
-
-    if (std.mem.startsWith(u8, s, "~")) {
-        return error.UnsupportedTildeExpansion;
-    }
-
-    if (std.fs.path.isAbsolute(s)) {
-        return clean.cleanPath(allocator, s);
-    }
+    if (std.mem.startsWith(u8, s, "~")) return error.UnsupportedTildeExpansion;
+    if (std.fs.path.isAbsolute(s)) return clean.cleanPath(allocator, s);
 
     var cwd_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
     const cwd_len = std.process.currentPath(getProcessIo(), &cwd_buf) catch return error.CannotGetCwd;
-    const cwd = cwd_buf[0..cwd_len];
-    const joined = try std.fs.path.join(allocator, &[_][]const u8{ cwd, s });
+    const joined = try std.fs.path.join(allocator, &[_][]const u8{ cwd_buf[0..cwd_len], s });
     defer allocator.free(joined);
     return clean.cleanPath(allocator, joined);
 }
@@ -108,49 +80,27 @@ pub fn resolvePath(allocator: Allocator, homeDir: []const u8, userInput: []const
     const target = try resolveUserPath(allocator, homeDir, userInput);
     errdefer allocator.free(target);
 
-    // Compute relative path from homeDir to target
     const clean_home = try clean.cleanPath(allocator, homeDir);
     defer allocator.free(clean_home);
 
-    const clean_target = target;
+    if (std.mem.eql(u8, clean_home, target)) return error.CannotManageEntireHomeRoot;
 
-    if (std.mem.eql(u8, clean_home, clean_target)) {
-        return error.CannotManageEntireHomeRoot;
-    }
+    if (!std.mem.startsWith(u8, target, clean_home)) return error.PathOutsideHome;
+    const rest = target[clean_home.len..];
+    if (rest.len == 0 or (rest[0] != '/' and rest[0] != '\\')) return error.PathOutsideHome;
 
-    var rel: []const u8 = undefined;
-    if (std.mem.startsWith(u8, clean_target, clean_home)) {
-        var rest = clean_target[clean_home.len..];
-        if (rest.len > 0 and (rest[0] == '/' or rest[0] == '\\')) {
-            rest = rest[1..];
-            rel = rest;
-        } else {
-            return error.PathOutsideHome;
-        }
-    } else {
-        return error.PathOutsideHome;
-    }
-
-    const slash_rel = try clean.toSlashOwned(allocator, rel);
+    const slash_rel = try clean.toSlashOwned(allocator, rest[1..]);
     defer allocator.free(slash_rel);
 
     if (std.mem.eql(u8, slash_rel, ".rice") or std.mem.startsWith(u8, slash_rel, ".rice/")) {
         return error.CannotManageRiceRepository;
     }
-    if (std.mem.eql(u8, slash_rel, ".rice.ini")) {
-        return error.RiceIniAutoManaged;
-    }
-
-    const config_path = try std.fmt.allocPrint(allocator, "~/{s}", .{slash_rel});
-    errdefer allocator.free(config_path);
-
-    const git_path = try allocator.dupe(u8, slash_rel);
-    errdefer allocator.free(git_path);
+    if (std.mem.eql(u8, slash_rel, ".rice.ini")) return error.RiceIniAutoManaged;
 
     return ResolvedPaths{
-        .config_path = config_path,
+        .config_path = try std.fmt.allocPrint(allocator, "~/{s}", .{slash_rel}),
         .abs_path = target,
-        .git_path = git_path,
+        .git_path = try allocator.dupe(u8, slash_rel),
     };
 }
 
@@ -188,9 +138,7 @@ pub const InstallDestResult = struct {
 
 pub fn resolveInstallDestination(allocator: Allocator, homeDir: []const u8, userInput: []const u8, itemName: []const u8, isContents: bool) !InstallDestResult {
     const s = std.mem.trim(u8, userInput, " \t\r\n");
-    if (s.len == 0) {
-        return error.DestinationPathEmpty;
-    }
+    if (s.len == 0) return error.DestinationPathEmpty;
 
     var target: []u8 = undefined;
     if (std.mem.startsWith(u8, s, "~/") or std.mem.startsWith(u8, s, "~\\")) {
@@ -233,10 +181,9 @@ pub fn resolveInstallDestination(allocator: Allocator, homeDir: []const u8, user
     var rel: []const u8 = "";
 
     if (std.mem.startsWith(u8, target, clean_home)) {
-        var rest = target[clean_home.len..];
+        const rest = target[clean_home.len..];
         if (rest.len > 0 and (rest[0] == '/' or rest[0] == '\\')) {
-            rest = rest[1..];
-            rel = rest;
+            rel = rest[1..];
         } else if (rest.len == 0) {
             return error.CannotManageEntireHomeRoot;
         } else {
@@ -247,9 +194,8 @@ pub fn resolveInstallDestination(allocator: Allocator, homeDir: []const u8, user
     }
 
     if (is_outside) {
-        const cfg_p = try allocator.dupe(u8, target);
         return InstallDestResult{
-            .config_path = cfg_p,
+            .config_path = try allocator.dupe(u8, target),
             .abs_path = target,
             .is_outside_home = true,
         };
@@ -261,14 +207,12 @@ pub fn resolveInstallDestination(allocator: Allocator, homeDir: []const u8, user
     if (std.mem.eql(u8, slash_rel, ".rice") or std.mem.startsWith(u8, slash_rel, ".rice/")) {
         return error.CannotManageRiceRepository;
     }
-    if (std.mem.eql(u8, slash_rel, ".rice.ini")) {
-        return error.RiceIniAutoManaged;
-    }
+    if (std.mem.eql(u8, slash_rel, ".rice.ini")) return error.RiceIniAutoManaged;
 
-    const cfg_p = try std.fmt.allocPrint(allocator, "~/{s}", .{slash_rel});
     return InstallDestResult{
-        .config_path = cfg_p,
+        .config_path = try std.fmt.allocPrint(allocator, "~/{s}", .{slash_rel}),
         .abs_path = target,
         .is_outside_home = false,
     };
 }
+

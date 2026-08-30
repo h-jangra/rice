@@ -103,31 +103,31 @@ pub const Spinner = struct {
         }
     }
 
-    pub fn stop(self: *Spinner) void {
+    fn finish(self: *Spinner, final_message: ?[]const u8) void {
         if (self.active.swap(false, .release)) {
             if (self.thread) |*t| {
                 t.join();
                 self.thread = null;
             }
             if (self.is_tty) {
-                std.debug.print("\r\x1b[2K", .{});
+                if (final_message) |msg| {
+                    std.debug.print("\r\x1b[2K{s}\n", .{msg});
+                } else {
+                    std.debug.print("\r\x1b[2K", .{});
+                }
+            } else if (final_message) |msg| {
+                std.debug.print("{s}\n", .{msg});
             }
         }
         self.allocator.destroy(self);
     }
 
+    pub fn stop(self: *Spinner) void {
+        self.finish(null);
+    }
+
     pub fn stopWithMessage(self: *Spinner, final_message: []const u8) void {
-        if (self.active.swap(false, .release)) {
-            if (self.thread) |*t| {
-                t.join();
-                self.thread = null;
-            }
-            if (self.is_tty) {
-                std.debug.print("\r\x1b[2K{s}\n", .{final_message});
-            } else {
-                std.debug.print("{s}\n", .{final_message});
-            }
-        }
-        self.allocator.destroy(self);
+        self.finish(final_message);
     }
 };
+

@@ -24,7 +24,7 @@ sudo curl -fL https://github.com/h-jangra/rice/releases/latest/download/rice-x86
 
 ### From Source
 
-Requires Zig 0.15.1+.
+Requires Zig 0.16.0+.
 
 ```bash
 git clone https://github.com/h-jangra/rice.git

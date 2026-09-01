@@ -6,7 +6,7 @@ const fs = @import("../fs.zig");
 const ui = @import("../ui.zig");
 const bin_mod = @import("../bin/mod.zig");
 
-pub fn runDirectURLInstall(allocator: Allocator, homeDir: []const u8, rawURL: []const u8, rawDest: []const u8, contentsFlag: bool) !void {
+pub fn runDirectURLInstall(allocator: Allocator, homeDir: []const u8, rawURL: []const u8, rawDest: []const u8, contentsFlag: bool, forceFlag: bool) !void {
     const tmp_dir_path = try std.fmt.allocPrint(allocator, "/tmp/rice-dl-{d}", .{fs.getMilliTimestamp()});
     defer allocator.free(tmp_dir_path);
     try fs.makePath(tmp_dir_path);
@@ -65,7 +65,10 @@ pub fn runDirectURLInstall(allocator: Allocator, homeDir: []const u8, rawURL: []
         allocator.free(dl_path);
     }
 
-    const data = try std.Io.Dir.cwd().readFileAlloc(paths.getProcessIo(), dl_path, allocator, .limited(100 * 1024 * 1024));
+    const data = std.Io.Dir.cwd().readFileAlloc(paths.getProcessIo(), dl_path, allocator, .limited(100 * 1024 * 1024)) catch |err| {
+        std.debug.print("Error reading downloaded file '{s}': {s}\n", .{ dl_path, @errorName(err) });
+        return err;
+    };
     defer allocator.free(data);
 
     if (fs.isHTMLContent(data)) {
@@ -75,18 +78,25 @@ pub fn runDirectURLInstall(allocator: Allocator, homeDir: []const u8, rawURL: []
 
     const is_arch = fs.isArchive(asset_name) or fs.isArchiveData(data);
 
-    var dest_abs = try paths.resolveUserPath(allocator, homeDir, rawDest);
+    var dest_abs = paths.resolveUserPath(allocator, homeDir, rawDest) catch |err| {
+        std.debug.print("Error resolving destination path '{s}': {s}\n", .{ rawDest, @errorName(err) });
+        return err;
+    };
     defer allocator.free(dest_abs);
 
     if (!contentsFlag and !is_arch) {
         var is_dir = false;
-        if (fs.openDirAbsolute(dest_abs, .{})) |d| {
-            var dir = d;
-            dir.close(paths.getProcessIo());
+        if (std.mem.endsWith(u8, rawDest, "/") or std.mem.endsWith(u8, rawDest, "\\") or
+            std.mem.eql(u8, rawDest, ".") or std.mem.eql(u8, rawDest, "..") or
+            std.mem.eql(u8, rawDest, "./") or std.mem.eql(u8, rawDest, ".\\") or
+            std.mem.eql(u8, rawDest, "../") or std.mem.eql(u8, rawDest, "..\\"))
+        {
             is_dir = true;
-        } else |_| {}
+        } else if (fs.isDirAbsolute(dest_abs)) {
+            is_dir = true;
+        }
 
-        if (is_dir or std.mem.endsWith(u8, rawDest, "/") or std.mem.endsWith(u8, rawDest, "\\")) {
+        if (is_dir) {
             const joined = try std.fs.path.join(allocator, &.{ dest_abs, asset_name });
             allocator.free(dest_abs);
             dest_abs = joined;
@@ -111,23 +121,20 @@ pub fn runDirectURLInstall(allocator: Allocator, homeDir: []const u8, rawURL: []
     }
     defer allocator.free(dest_display);
 
-    var conflict = false;
-    if (fs.openFileAbsolute(dest_abs, .{})) |f| {
-        f.close(paths.getProcessIo());
-        conflict = true;
-    } else |_| {
-        if (fs.openDirAbsolute(dest_abs, .{})) |d| {
-            var dir = d;
-            dir.close(paths.getProcessIo());
-            conflict = true;
-        } else |_| {}
-    }
-    if (conflict) {
-        const prompt = try std.fmt.allocPrint(allocator, "Destination '{s}' already exists.\nOverwrite? [y/N]: ", .{dest_abs});
-        defer allocator.free(prompt);
-        if (!fs.promptConfirm(prompt)) {
-            std.debug.print("Installation cancelled.\n", .{});
-            return;
+    if (!forceFlag) {
+        var conflict = false;
+        if (!is_arch and !contentsFlag) {
+            if (fs.isFileAbsolute(dest_abs) or fs.isDirAbsolute(dest_abs)) {
+                conflict = true;
+            }
+        }
+        if (conflict) {
+            const prompt = try std.fmt.allocPrint(allocator, "Destination '{s}' already exists.\nOverwrite? [y/N]: ", .{dest_abs});
+            defer allocator.free(prompt);
+            if (!fs.promptConfirm(prompt)) {
+                std.debug.print("Installation cancelled.\n", .{});
+                return;
+            }
         }
     }
 
@@ -142,7 +149,10 @@ pub fn runDirectURLInstall(allocator: Allocator, homeDir: []const u8, rawURL: []
             const ext_sp = try ui.Spinner.start(allocator, ext_msg);
             defer ext_sp.stop();
 
-            try fs.extractArchive(allocator, data, asset_name, extract_dir);
+            fs.extractArchive(allocator, data, asset_name, extract_dir) catch |err| {
+                std.debug.print("Error extracting archive {s}: {s}\n", .{ asset_name, @errorName(err) });
+                return err;
+            };
         }
 
         var target_extract_path: []const u8 = extract_dir;
@@ -170,17 +180,69 @@ pub fn runDirectURLInstall(allocator: Allocator, homeDir: []const u8, rawURL: []
             if (single_child_name) |scn| allocator.free(scn);
         }
 
-        try fs.makePath(dest_abs);
+        var use_sudo = false;
+        fs.makePath(dest_abs) catch |err| {
+            if ((err == error.AccessDenied or err == error.PermissionDenied) and builtin.os.tag != .windows) {
+                const prompt = try std.fmt.allocPrint(allocator, "Permission denied creating directory '{s}'. Elevate with sudo? [y/N]: ", .{dest_abs});
+                defer allocator.free(prompt);
+                if (fs.promptConfirm(prompt)) {
+                    use_sudo = true;
+                } else {
+                    std.debug.print("Installation cancelled.\n", .{});
+                    return error.PermissionDenied;
+                }
+            } else {
+                std.debug.print("Error creating directory '{s}': {s}\n", .{ dest_abs, @errorName(err) });
+                return err;
+            }
+        };
 
-        var ext_dir = try fs.openDirAbsolute(target_extract_path, .{ .iterate = true });
-        defer ext_dir.close(paths.getProcessIo());
-        var it = ext_dir.iterate();
-        while (try it.next(paths.getProcessIo())) |entry| {
-            const src_child = try std.fs.path.join(allocator, &.{ target_extract_path, entry.name });
-            defer allocator.free(src_child);
-            const dst_child = try std.fs.path.join(allocator, &.{ dest_abs, entry.name });
-            defer allocator.free(dst_child);
-            try fs.copyPath(allocator, src_child, dst_child);
+        if (!use_sudo and builtin.os.tag != .windows) {
+            const probe_path = try std.fmt.allocPrint(allocator, "{s}/.rice-probe-{d}", .{ dest_abs, fs.getMilliTimestamp() });
+            defer allocator.free(probe_path);
+            if (fs.createFileAbsolute(probe_path, .{})) |probe_file| {
+                probe_file.close(paths.getProcessIo());
+                fs.deleteFileAbsolute(probe_path) catch {};
+            } else |err| {
+                if (err == error.AccessDenied or err == error.PermissionDenied) {
+                    const prompt = try std.fmt.allocPrint(allocator, "Permission denied writing to '{s}'. Elevate with sudo? [y/N]: ", .{dest_abs});
+                    defer allocator.free(prompt);
+                    if (fs.promptConfirm(prompt)) {
+                        use_sudo = true;
+                    } else {
+                        std.debug.print("Installation cancelled.\n", .{});
+                        return error.PermissionDenied;
+                    }
+                }
+            }
+        }
+
+        if (use_sudo) {
+            fs.sudoInstallPath(allocator, target_extract_path, dest_abs, false) catch |err| {
+                std.debug.print("Error installing with sudo: {s}\n", .{@errorName(err)});
+                return err;
+            };
+        } else {
+            var ext_dir = fs.openDirAbsolute(target_extract_path, .{ .iterate = true }) catch |err| {
+                std.debug.print("Error reading extracted files in '{s}': {s}\n", .{ target_extract_path, @errorName(err) });
+                return err;
+            };
+            defer ext_dir.close(paths.getProcessIo());
+            var it = ext_dir.iterate();
+            while (try it.next(paths.getProcessIo())) |entry| {
+                const src_child = try std.fs.path.join(allocator, &.{ target_extract_path, entry.name });
+                defer allocator.free(src_child);
+                const dst_child = try std.fs.path.join(allocator, &.{ dest_abs, entry.name });
+                defer allocator.free(dst_child);
+                fs.copyPath(allocator, src_child, dst_child) catch |err| {
+                    if (err == error.AccessDenied or err == error.PermissionDenied) {
+                        std.debug.print("Error: permission denied writing to '{s}'. Try running with sudo or check permissions.\n", .{dst_child});
+                    } else {
+                        std.debug.print("Error installing '{s}' to '{s}': {s}\n", .{ src_child, dst_child, @errorName(err) });
+                    }
+                    return err;
+                };
+            }
         }
     } else {
         fs.installPath(allocator, dl_path, dest_abs) catch |err| {

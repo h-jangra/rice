@@ -187,7 +187,7 @@ pub fn installDotfiles(allocator: Allocator, git: *git_mod.Git, homeDir: []const
                     });
                 }
             } else |_| {
-                return url.runDirectURLInstall(allocator, homeDir, raw, ".", contents_flag);
+                return url.runDirectURLInstall(allocator, homeDir, raw, ".", contents_flag, force_flag);
             }
         } else {
             needs_remote_discovery = raw;
@@ -220,7 +220,7 @@ pub fn installDotfiles(allocator: Allocator, git: *git_mod.Git, homeDir: []const
                     });
                 }
             } else |_| {
-                return url.runDirectURLInstall(allocator, homeDir, raw_src, raw_dst, contents_flag);
+                return url.runDirectURLInstall(allocator, homeDir, raw_src, raw_dst, contents_flag, force_flag);
             }
         } else {
             const clean_src = try paths.validateSourcePath(allocator, raw_src);
@@ -437,15 +437,10 @@ pub fn installDotfiles(allocator: Allocator, git: *git_mod.Git, homeDir: []const
     if (!force_flag) {
         for (items.items) |item| {
             var conflict = false;
-            if (fs.openFileAbsolute(item.abs_path, .{})) |f| {
-                f.close(paths.getProcessIo());
+            if (fs.isFileAbsolute(item.abs_path)) {
                 conflict = true;
-            } else |_| {
-                if (fs.openDirAbsolute(item.abs_path, .{})) |d| {
-                    var dir = d;
-                    dir.close(paths.getProcessIo());
-                    conflict = true;
-                } else |_| {}
+            } else if (!contents_flag and fs.isDirAbsolute(item.abs_path)) {
+                conflict = true;
             }
             if (conflict) {
                 const prompt = try std.fmt.allocPrint(allocator, "Destination '{s}' already exists.\nOverwrite? [y/N]: ", .{item.abs_path});
@@ -488,16 +483,62 @@ pub fn installDotfiles(allocator: Allocator, git: *git_mod.Git, homeDir: []const
         }
 
         if (contents_flag) {
-            try fs.makePath(item.abs_path);
-            var dir = try fs.openDirAbsolute(src_path, .{ .iterate = true });
-            defer dir.close(paths.getProcessIo());
-            var it = dir.iterate();
-            while (try it.next(paths.getProcessIo())) |entry| {
-                const sc = try std.fs.path.join(allocator, &.{ src_path, entry.name });
-                defer allocator.free(sc);
-                const dc = try std.fs.path.join(allocator, &.{ item.abs_path, entry.name });
-                defer allocator.free(dc);
-                try fs.copyPath(allocator, sc, dc);
+            var use_sudo = false;
+            fs.makePath(item.abs_path) catch |err| {
+                if ((err == error.AccessDenied or err == error.PermissionDenied) and builtin.os.tag != .windows) {
+                    const prompt = try std.fmt.allocPrint(allocator, "Permission denied creating directory '{s}'. Elevate with sudo? [y/N]: ", .{item.abs_path});
+                    defer allocator.free(prompt);
+                    if (fs.promptConfirm(prompt)) {
+                        use_sudo = true;
+                    } else {
+                        std.debug.print("Installation cancelled.\n", .{});
+                        return error.PermissionDenied;
+                    }
+                } else {
+                    std.debug.print("Error creating directory '{s}': {s}\n", .{ item.abs_path, @errorName(err) });
+                    return err;
+                }
+            };
+
+            if (!use_sudo and builtin.os.tag != .windows) {
+                const probe_path = try std.fmt.allocPrint(allocator, "{s}/.rice-probe-{d}", .{ item.abs_path, fs.getMilliTimestamp() });
+                defer allocator.free(probe_path);
+                if (fs.createFileAbsolute(probe_path, .{})) |probe_file| {
+                    probe_file.close(paths.getProcessIo());
+                    fs.deleteFileAbsolute(probe_path) catch {};
+                } else |err| {
+                    if (err == error.AccessDenied or err == error.PermissionDenied) {
+                        const prompt = try std.fmt.allocPrint(allocator, "Permission denied writing to '{s}'. Elevate with sudo? [y/N]: ", .{item.abs_path});
+                        defer allocator.free(prompt);
+                        if (fs.promptConfirm(prompt)) {
+                            use_sudo = true;
+                        } else {
+                            std.debug.print("Installation cancelled.\n", .{});
+                            return error.PermissionDenied;
+                        }
+                    }
+                }
+            }
+
+            if (use_sudo) {
+                fs.sudoInstallPath(allocator, src_path, item.abs_path, false) catch |err| {
+                    std.debug.print("Error installing with sudo: {s}\n", .{@errorName(err)});
+                    return err;
+                };
+            } else {
+                var dir = fs.openDirAbsolute(src_path, .{ .iterate = true }) catch |err| {
+                    std.debug.print("Error reading directory '{s}': {s}\n", .{ src_path, @errorName(err) });
+                    return err;
+                };
+                defer dir.close(paths.getProcessIo());
+                var it = dir.iterate();
+                while (try it.next(paths.getProcessIo())) |entry| {
+                    const sc = try std.fs.path.join(allocator, &.{ src_path, entry.name });
+                    defer allocator.free(sc);
+                    const dc = try std.fs.path.join(allocator, &.{ item.abs_path, entry.name });
+                    defer allocator.free(dc);
+                    try fs.copyPath(allocator, sc, dc);
+                }
             }
         } else {
             fs.installPath(allocator, src_path, item.abs_path) catch |err| {

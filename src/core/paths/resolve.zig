@@ -17,6 +17,7 @@ pub fn getProcessIo() std.Io {
 
 pub fn getProcessEnviron() std.process.Environ {
     if (process_environ) |env| return env;
+    if (builtin.is_test) return std.testing.environ;
     return .{ .block = if (builtin.os.tag == .windows) .global else .empty };
 }
 
@@ -157,7 +158,11 @@ pub fn resolveInstallDestination(allocator: Allocator, homeDir: []const u8, user
     errdefer allocator.free(target);
 
     if (!isContents and itemName.len > 0) {
-        const base = std.fs.path.basename(target);
+        const is_explicit_dot = std.mem.eql(u8, s, ".") or std.mem.eql(u8, s, "..") or
+            std.mem.eql(u8, s, "./") or std.mem.eql(u8, s, ".\\") or
+            std.mem.eql(u8, s, "../") or std.mem.eql(u8, s, "..\\");
+        const has_trailing_slash = std.mem.endsWith(u8, userInput, "/") or std.mem.endsWith(u8, userInput, "\\");
+
         var is_dir = false;
         if (std.Io.Dir.openDirAbsolute(getProcessIo(), target, .{})) |d| {
             var dir = d;
@@ -165,7 +170,12 @@ pub fn resolveInstallDestination(allocator: Allocator, homeDir: []const u8, user
             is_dir = true;
         } else |_| {}
 
-        if (is_dir or std.mem.endsWith(u8, userInput, "/") or std.mem.endsWith(u8, userInput, "\\") or std.ascii.eqlIgnoreCase(base, "downloads")) {
+        if (is_explicit_dot or has_trailing_slash) {
+            const joined = try std.fs.path.join(allocator, &[_][]const u8{ target, itemName });
+            allocator.free(target);
+            target = joined;
+        } else if (is_dir or std.ascii.eqlIgnoreCase(std.fs.path.basename(target), "downloads")) {
+            const base = std.fs.path.basename(target);
             if (!std.mem.eql(u8, base, itemName)) {
                 const joined = try std.fs.path.join(allocator, &[_][]const u8{ target, itemName });
                 allocator.free(target);

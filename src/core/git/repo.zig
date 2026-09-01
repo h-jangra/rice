@@ -56,14 +56,17 @@ pub const Git = struct {
     }
 
     pub fn initBare(self: *const Git) !void {
-        var child = try std.process.spawn(paths.getProcessIo(), .{
+        var env_map = try std.process.Environ.createMap(paths.getProcessEnviron(), self.allocator);
+        defer env_map.deinit();
+        try env_map.put("GIT_TERMINAL_PROMPT", "0");
+
+        const res = try std.process.run(self.allocator, paths.getProcessIo(), .{
             .argv = &.{ "git", "init", "--bare", self.rice_dir },
-            .stdin = .inherit,
-            .stdout = .inherit,
-            .stderr = .inherit,
+            .environ_map = &env_map,
         });
-        const term = try child.wait(paths.getProcessIo());
-        if (term != .exited or term.exited != 0) return error.GitInitFailed;
+        defer self.allocator.free(res.stdout);
+        defer self.allocator.free(res.stderr);
+        if (res.term != .exited or res.term.exited != 0) return error.GitInitFailed;
 
         _ = self.bareRun(&.{ "config", "status.showUntrackedFiles", "no" }) catch {};
         _ = self.bareRun(&.{ "symbolic-ref", "HEAD", "refs/heads/main" }) catch {};

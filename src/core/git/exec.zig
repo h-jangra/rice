@@ -27,6 +27,10 @@ fn createGitEnv(allocator: Allocator) !std.process.Environ.Map {
     errdefer env_map.deinit();
     try env_map.put("GIT_TERMINAL_PROMPT", "0");
     try env_map.put("GIT_SSH_COMMAND", "ssh -o BatchMode=yes");
+    if (env_map.get("GIT_AUTHOR_NAME") == null) try env_map.put("GIT_AUTHOR_NAME", "rice");
+    if (env_map.get("GIT_AUTHOR_EMAIL") == null) try env_map.put("GIT_AUTHOR_EMAIL", "rice@localhost");
+    if (env_map.get("GIT_COMMITTER_NAME") == null) try env_map.put("GIT_COMMITTER_NAME", "rice");
+    if (env_map.get("GIT_COMMITTER_EMAIL") == null) try env_map.put("GIT_COMMITTER_EMAIL", "rice@localhost");
     return env_map;
 }
 
@@ -37,17 +41,17 @@ pub fn execRun(allocator: Allocator, rice_dir: []const u8, home_dir: []const u8,
     var env_map = try createGitEnv(allocator);
     defer env_map.deinit();
 
-    var child = try std.process.spawn(paths.getProcessIo(), .{
+    const res = try std.process.run(allocator, paths.getProcessIo(), .{
         .argv = cmd_list.items,
         .cwd = .{ .path = home_dir },
         .environ_map = &env_map,
-        .stdin = .inherit,
-        .stdout = .inherit,
-        .stderr = .inherit,
     });
-    const term = try child.wait(paths.getProcessIo());
-    if (term != .exited or term.exited != 0) return error.GitCommandFailed;
+    defer allocator.free(res.stdout);
+    defer allocator.free(res.stderr);
+
+    if (res.term != .exited or res.term.exited != 0) return error.GitCommandFailed;
 }
+
 
 pub fn execOutputBytes(allocator: Allocator, rice_dir: []const u8, home_dir: []const u8, args: []const []const u8, with_work_tree: bool) ![]u8 {
     var cmd_list = try makeCmdArgs(allocator, rice_dir, home_dir, args, with_work_tree);

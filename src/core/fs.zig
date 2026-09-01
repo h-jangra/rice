@@ -80,6 +80,27 @@ pub fn openDirAbsolute(p: []const u8, options: std.Io.Dir.OpenOptions) !std.Io.D
     return std.Io.Dir.cwd().openDir(paths.getProcessIo(), p, options);
 }
 
+pub fn isFileAbsolute(p: []const u8) bool {
+    if (openFileAbsolute(p, .{})) |f| {
+        defer f.close(paths.getProcessIo());
+        if (f.stat(paths.getProcessIo())) |stat| {
+            return stat.kind != .directory;
+        } else |_| return false;
+    } else |_| return false;
+}
+
+pub fn isDirAbsolute(p: []const u8) bool {
+    if (openDirAbsolute(p, .{})) |d| {
+        var dir = d;
+        dir.close(paths.getProcessIo());
+        return true;
+    } else |_| return false;
+}
+
+pub fn pathExistsAbsolute(p: []const u8) bool {
+    return isFileAbsolute(p) or isDirAbsolute(p);
+}
+
 pub fn deleteFileAbsolute(p: []const u8) !void {
     return std.Io.Dir.cwd().deleteFile(paths.getProcessIo(), p);
 }
@@ -292,10 +313,7 @@ pub fn installPath(allocator: Allocator, src: []const u8, dst: []const u8) !void
 }
 
 fn fileExists(p: []const u8) bool {
-    if (openFileAbsolute(p, .{})) |f| {
-        f.close(paths.getProcessIo());
-        return true;
-    } else |_| return false;
+    return pathExistsAbsolute(p);
 }
 
 pub fn backupFile(allocator: Allocator, targetPath: []const u8) ![]u8 {

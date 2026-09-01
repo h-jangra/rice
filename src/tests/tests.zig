@@ -4,6 +4,9 @@ const paths = @import("../core/paths.zig");
 const fs = @import("../core/fs.zig");
 const bin = @import("../core/bin.zig");
 const ui = @import("../core/ui.zig");
+const git_mod = @import("../core/git.zig");
+const cmd_repo = @import("../cmd/repo.zig");
+const discovery = @import("../core/install/discovery.zig");
 
 test "ui: spinner basic lifecycle" {
     const allocator = std.testing.allocator;
@@ -170,6 +173,28 @@ test "paths: resolve install destination" {
     try std.testing.expectEqualStrings("~/.config/foot", res2.config_path);
     try std.testing.expectEqualStrings("/home/testuser/.config/foot", res2.abs_path);
     try std.testing.expect(!res2.is_outside_home);
+
+    const res3 = try paths.resolveInstallDestination(allocator, fake_home, ".", "foo.txt", false);
+    defer {
+        allocator.free(res3.config_path);
+        allocator.free(res3.abs_path);
+    }
+    try std.testing.expect(std.mem.endsWith(u8, res3.abs_path, "/foo.txt"));
+
+    const res4 = try paths.resolveInstallDestination(allocator, fake_home, ".", "Downloads", false);
+    defer {
+        allocator.free(res4.config_path);
+        allocator.free(res4.abs_path);
+    }
+    try std.testing.expect(std.mem.endsWith(u8, res4.abs_path, "/Downloads"));
+
+    const res5 = try paths.resolveInstallDestination(allocator, fake_home, "~/Downloads", "sample.txt", false);
+    defer {
+        allocator.free(res5.config_path);
+        allocator.free(res5.abs_path);
+    }
+    try std.testing.expectEqualStrings("~/Downloads/sample.txt", res5.config_path);
+    try std.testing.expectEqualStrings("/home/testuser/Downloads/sample.txt", res5.abs_path);
 }
 
 test "paths: repo url normalization" {
@@ -255,3 +280,289 @@ test "bin: options with destination" {
     };
     try std.testing.expectEqualStrings(".", opts2.dest);
 }
+
+test "repo: init without remote creates bare repo and empty config" {
+    const allocator = std.testing.allocator;
+
+    const fake_home = try std.fmt.allocPrint(allocator, "/tmp/rice-test-home-{d}", .{fs.getMilliTimestamp()});
+    defer allocator.free(fake_home);
+    try fs.makePath(fake_home);
+    defer fs.deleteTreeAbsolute(fake_home) catch {};
+
+    var git = try git_mod.Git.init(allocator, fake_home);
+    defer git.deinit();
+
+    try cmd_repo.initCmd(allocator, git, fake_home, &.{});
+
+    try std.testing.expect(git.isBareRepo());
+    try std.testing.expect(git.hasCommits());
+
+    const ini_path = try paths.getRiceIniPath(allocator, fake_home);
+    defer allocator.free(ini_path);
+
+    const cfg = try config.loadConfig(allocator, ini_path);
+    defer {
+        cfg.deinit();
+        allocator.destroy(cfg);
+    }
+
+    try std.testing.expect(cfg.remote == null);
+    try std.testing.expectEqualStrings("main", cfg.branch.?);
+    try std.testing.expectEqual(@as(usize, 0), cfg.files.items.len);
+}
+
+test "repo: init with remote saves remote/branch and only fetches .rice.ini if present" {
+    const allocator = std.testing.allocator;
+
+    // 1. Create a remote git repository without .rice.ini
+    const fake_remote = try std.fmt.allocPrint(allocator, "/tmp/rice-test-remote-noini-{d}", .{fs.getMilliTimestamp()});
+    defer allocator.free(fake_remote);
+    try fs.makePath(fake_remote);
+    defer fs.deleteTreeAbsolute(fake_remote) catch {};
+
+    try discovery.execGitInDir(allocator, fake_remote, &.{ "init", "-b", "main" });
+    try discovery.execGitInDir(allocator, fake_remote, &.{ "config", "user.name", "TestUser" });
+    try discovery.execGitInDir(allocator, fake_remote, &.{ "config", "user.email", "test@example.com" });
+
+    // Add a file in the remote repo that is NOT .rice.ini
+    const sample_file = try std.fs.path.join(allocator, &.{ fake_remote, "hello.txt" });
+    defer allocator.free(sample_file);
+    const f = try fs.createFileAbsolute(sample_file, .{});
+    try f.writePositionalAll(paths.getProcessIo(), "hello world", 0);
+    f.close(paths.getProcessIo());
+
+    try discovery.execGitInDir(allocator, fake_remote, &.{ "add", "hello.txt" });
+    try discovery.execGitInDir(allocator, fake_remote, &.{ "commit", "-m", "initial commit" });
+
+    // 2. Initialize rice in a fake home pointing to fake_remote
+    const fake_home = try std.fmt.allocPrint(allocator, "/tmp/rice-test-home-remote-{d}", .{fs.getMilliTimestamp()});
+    defer allocator.free(fake_home);
+    try fs.makePath(fake_home);
+    defer fs.deleteTreeAbsolute(fake_home) catch {};
+
+    var git = try git_mod.Git.init(allocator, fake_home);
+    defer git.deinit();
+
+    try cmd_repo.initCmd(allocator, git, fake_home, &.{fake_remote});
+
+    try std.testing.expect(git.isBareRepo());
+    try std.testing.expect(git.hasCommits());
+
+    const ini_path = try paths.getRiceIniPath(allocator, fake_home);
+    defer allocator.free(ini_path);
+
+    const cfg = try config.loadConfig(allocator, ini_path);
+    defer {
+        cfg.deinit();
+        allocator.destroy(cfg);
+    }
+
+    // Remote and branch should be saved
+    try std.testing.expectEqualStrings(fake_remote, cfg.remote.?);
+    try std.testing.expectEqualStrings("main", cfg.branch.?);
+    // Files must NOT contain hello.txt (empty because no .rice.ini on remote)
+    try std.testing.expectEqual(@as(usize, 0), cfg.files.items.len);
+
+    // Bare repo in fake_home should only have .rice.ini in its HEAD commit, not hello.txt
+    var head_files = try git.listRefFiles("HEAD", &.{});
+    defer {
+        for (head_files.items) |hf| allocator.free(hf);
+        head_files.deinit(allocator);
+    }
+    try std.testing.expectEqual(@as(usize, 1), head_files.items.len);
+    try std.testing.expectEqualStrings(".rice.ini", head_files.items[0]);
+}
+
+test "repo: init with remote that has .rice.ini fetches and loads it" {
+    const allocator = std.testing.allocator;
+
+    // 1. Create a remote git repository with a .rice.ini
+    const fake_remote = try std.fmt.allocPrint(allocator, "/tmp/rice-test-remote-withini-{d}", .{fs.getMilliTimestamp()});
+    defer allocator.free(fake_remote);
+    try fs.makePath(fake_remote);
+    defer fs.deleteTreeAbsolute(fake_remote) catch {};
+
+    try discovery.execGitInDir(allocator, fake_remote, &.{ "init", "-b", "main" });
+    try discovery.execGitInDir(allocator, fake_remote, &.{ "config", "user.name", "TestUser" });
+    try discovery.execGitInDir(allocator, fake_remote, &.{ "config", "user.email", "test@example.com" });
+
+    const remote_ini = try std.fs.path.join(allocator, &.{ fake_remote, ".rice.ini" });
+    defer allocator.free(remote_ini);
+    const f = try fs.createFileAbsolute(remote_ini, .{});
+    const ini_data =
+        \\[files]
+        \\~/.config/nvim
+        \\~/.zshrc
+        \\
+        \\[binaries]
+        \\bat = sharkdp/bat
+        \\
+    ;
+    try f.writePositionalAll(paths.getProcessIo(), ini_data, 0);
+    f.close(paths.getProcessIo());
+
+    try discovery.execGitInDir(allocator, fake_remote, &.{ "add", ".rice.ini" });
+    try discovery.execGitInDir(allocator, fake_remote, &.{ "commit", "-m", "add rice.ini" });
+
+    // 2. Initialize rice in a fake home pointing to fake_remote
+    const fake_home = try std.fmt.allocPrint(allocator, "/tmp/rice-test-home-withini-{d}", .{fs.getMilliTimestamp()});
+    defer allocator.free(fake_home);
+    try fs.makePath(fake_home);
+    defer fs.deleteTreeAbsolute(fake_home) catch {};
+
+    var git = try git_mod.Git.init(allocator, fake_home);
+    defer git.deinit();
+
+    try cmd_repo.initCmd(allocator, git, fake_home, &.{fake_remote});
+
+    const ini_path = try paths.getRiceIniPath(allocator, fake_home);
+    defer allocator.free(ini_path);
+
+    const cfg = try config.loadConfig(allocator, ini_path);
+    defer {
+        cfg.deinit();
+        allocator.destroy(cfg);
+    }
+
+    try std.testing.expectEqualStrings(fake_remote, cfg.remote.?);
+    try std.testing.expectEqualStrings("main", cfg.branch.?);
+    try std.testing.expect(cfg.hasFile("~/.config/nvim"));
+    try std.testing.expect(cfg.hasFile("~/.zshrc"));
+    try std.testing.expect(cfg.binaries.contains("bat"));
+}
+
+test "install: direct URL/local archive installation with force flag" {
+    const allocator = std.testing.allocator;
+    const url_mod = @import("../core/install/url.zig");
+
+    const tmp_test_dir = try std.fmt.allocPrint(allocator, "/tmp/rice-test-url-inst-{d}", .{fs.getMilliTimestamp()});
+    defer allocator.free(tmp_test_dir);
+    try fs.makePath(tmp_test_dir);
+    defer fs.deleteTreeAbsolute(tmp_test_dir) catch {};
+
+    const fake_home = try std.fs.path.join(allocator, &.{ tmp_test_dir, "home" });
+    defer allocator.free(fake_home);
+    try fs.makePath(fake_home);
+
+    const test_tar_dir = try std.fs.path.join(allocator, &.{ tmp_test_dir, "src_data" });
+    defer allocator.free(test_tar_dir);
+    try fs.makePath(test_tar_dir);
+
+    const font_file = try std.fs.path.join(allocator, &.{ test_tar_dir, "TestFont-Regular.ttf" });
+    defer allocator.free(font_file);
+    const ff = try fs.createFileAbsolute(font_file, .{});
+    try ff.writePositionalAll(paths.getProcessIo(), "fake-font-data", 0);
+    ff.close(paths.getProcessIo());
+
+    const tar_path = try std.fs.path.join(allocator, &.{ tmp_test_dir, "font.tar" });
+    defer allocator.free(tar_path);
+
+    const res = try std.process.run(allocator, paths.getProcessIo(), .{
+        .argv = &.{ "tar", "-cf", tar_path, "-C", test_tar_dir, "." },
+    });
+    allocator.free(res.stdout);
+    allocator.free(res.stderr);
+
+    const dest_dir = try std.fs.path.join(allocator, &.{ fake_home, ".local", "share", "fonts", "TestFont" });
+    defer allocator.free(dest_dir);
+
+    try url_mod.runDirectURLInstall(allocator, fake_home, tar_path, dest_dir, false, true);
+
+    const installed_file = try std.fs.path.join(allocator, &.{ dest_dir, "TestFont-Regular.ttf" });
+    defer allocator.free(installed_file);
+
+    const installed_f = try fs.openFileAbsolute(installed_file, .{});
+    installed_f.close(paths.getProcessIo());
+}
+
+test "install: direct archive installation into existing directory without force flag" {
+    const allocator = std.testing.allocator;
+    const url_mod = @import("../core/install/url.zig");
+
+    const tmp_test_dir = try std.fmt.allocPrint(allocator, "/tmp/rice-test-url-exist-{d}", .{fs.getMilliTimestamp()});
+    defer allocator.free(tmp_test_dir);
+    try fs.makePath(tmp_test_dir);
+    defer fs.deleteTreeAbsolute(tmp_test_dir) catch {};
+
+    const fake_home = try std.fs.path.join(allocator, &.{ tmp_test_dir, "home" });
+    defer allocator.free(fake_home);
+    try fs.makePath(fake_home);
+
+    const test_tar_dir = try std.fs.path.join(allocator, &.{ tmp_test_dir, "src_data" });
+    defer allocator.free(test_tar_dir);
+    try fs.makePath(test_tar_dir);
+
+    const sample_file = try std.fs.path.join(allocator, &.{ test_tar_dir, "sample.txt" });
+    defer allocator.free(sample_file);
+    const sf = try fs.createFileAbsolute(sample_file, .{});
+    try sf.writePositionalAll(paths.getProcessIo(), "sample-data", 0);
+    sf.close(paths.getProcessIo());
+
+    const tar_path = try std.fs.path.join(allocator, &.{ tmp_test_dir, "sample.tar" });
+    defer allocator.free(tar_path);
+
+    const res = try std.process.run(allocator, paths.getProcessIo(), .{
+        .argv = &.{ "tar", "-cf", tar_path, "-C", test_tar_dir, "." },
+    });
+    allocator.free(res.stdout);
+    allocator.free(res.stderr);
+
+    // Create the destination directory beforehand (like ~/Downloads)
+    const dest_dir = try std.fs.path.join(allocator, &.{ fake_home, "Downloads" });
+    defer allocator.free(dest_dir);
+    try fs.makePath(dest_dir);
+
+    // forceFlag = false, dest_dir already exists
+    try url_mod.runDirectURLInstall(allocator, fake_home, tar_path, dest_dir, false, false);
+
+    const installed_file = try std.fs.path.join(allocator, &.{ dest_dir, "sample.txt" });
+    defer allocator.free(installed_file);
+
+    const installed_f = try fs.openFileAbsolute(installed_file, .{});
+    installed_f.close(paths.getProcessIo());
+}
+
+test "install: direct file installation into existing directory and dot destination" {
+    const allocator = std.testing.allocator;
+    const url_mod = @import("../core/install/url.zig");
+
+    const tmp_test_dir = try std.fmt.allocPrint(allocator, "/tmp/rice-test-file-inst-{d}", .{fs.getMilliTimestamp()});
+    defer allocator.free(tmp_test_dir);
+    try fs.makePath(tmp_test_dir);
+    defer fs.deleteTreeAbsolute(tmp_test_dir) catch {};
+
+    const fake_home = try std.fs.path.join(allocator, &.{ tmp_test_dir, "home" });
+    defer allocator.free(fake_home);
+    try fs.makePath(fake_home);
+
+    const sample_src = try std.fs.path.join(allocator, &.{ tmp_test_dir, "hello.txt" });
+    defer allocator.free(sample_src);
+    const sf = try fs.createFileAbsolute(sample_src, .{});
+    try sf.writePositionalAll(paths.getProcessIo(), "hello world", 0);
+    sf.close(paths.getProcessIo());
+
+    // 1. Destination is existing directory ~/Downloads
+    const dest_dir = try std.fs.path.join(allocator, &.{ fake_home, "Downloads" });
+    defer allocator.free(dest_dir);
+    try fs.makePath(dest_dir);
+
+    try url_mod.runDirectURLInstall(allocator, fake_home, sample_src, dest_dir, false, false);
+
+    const target_file1 = try std.fs.path.join(allocator, &.{ dest_dir, "hello.txt" });
+    defer allocator.free(target_file1);
+    const f1 = try fs.openFileAbsolute(target_file1, .{});
+    f1.close(paths.getProcessIo());
+
+    // 2. Destination is "." (current working directory)
+    try url_mod.runDirectURLInstall(allocator, fake_home, sample_src, ".", false, false);
+
+    var cwd_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const cwd_len = try std.process.currentPath(paths.getProcessIo(), &cwd_buf);
+    const target_file2 = try std.fs.path.join(allocator, &.{ cwd_buf[0..cwd_len], "hello.txt" });
+    defer allocator.free(target_file2);
+    defer fs.deleteFileAbsolute(target_file2) catch {};
+
+    const f2 = try fs.openFileAbsolute(target_file2, .{});
+    f2.close(paths.getProcessIo());
+}
+

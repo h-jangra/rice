@@ -474,7 +474,12 @@ pub fn main(init: std.process.Init) !void {
     } else if (std.mem.eql(u8, resolved_cmd, "discard")) {
         cmd_sync.discardCmd(allocator, git, home_dir, cmd_args) catch std.process.exit(1);
     } else if (std.mem.eql(u8, resolved_cmd, "install")) {
-        install_mod.installCmd(allocator, git, home_dir, cmd_args) catch std.process.exit(1);
+        install_mod.installCmd(allocator, git, home_dir, cmd_args) catch |err| {
+            if (err != error.PermissionDenied and err != error.UnknownFlag and err != error.TooManyArgs and err != error.InvalidArgs and err != error.NoRepoConfigured and err != error.GitFetchFailed and err != error.DownloadedFileIsHTML and err != error.ContentsOnlyWithDirs) {
+                std.debug.print("Error: {s}\n", .{@errorName(err)});
+            }
+            std.process.exit(1);
+        };
     } else if (std.mem.eql(u8, command, "bin")) {
         install_mod.binCmd(allocator, home_dir, cmd_args) catch std.process.exit(1);
     } else if (std.mem.eql(u8, resolved_cmd, "edit")) {

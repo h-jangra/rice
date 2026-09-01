@@ -251,14 +251,14 @@ pub fn installBinary(allocator: Allocator, opts: InstallBinOptions, homeDir: []c
 
         var is_dir = false;
         if (std.mem.endsWith(u8, opts.dest, "/") or std.mem.endsWith(u8, opts.dest, "\\") or
-            std.mem.eql(u8, opts.dest, ".") or std.mem.eql(u8, opts.dest, ".."))
+            std.mem.eql(u8, opts.dest, ".") or std.mem.eql(u8, opts.dest, "..") or
+            std.mem.eql(u8, opts.dest, "./") or std.mem.eql(u8, opts.dest, ".\\") or
+            std.mem.eql(u8, opts.dest, "../") or std.mem.eql(u8, opts.dest, "..\\"))
         {
             is_dir = true;
-        } else if (fs.openDirAbsolute(dest_abs, .{})) |d| {
-            var dir = d;
-            dir.close(paths.getProcessIo());
+        } else if (fs.isDirAbsolute(dest_abs)) {
             is_dir = true;
-        } else |_| {}
+        }
 
         if (is_dir) {
             final_path = try std.fs.path.join(allocator, &.{ dest_abs, bin_name });

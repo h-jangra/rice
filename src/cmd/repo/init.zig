@@ -22,9 +22,7 @@ fn defaultBranch() []const u8 {
     return "main";
 }
 
-fn queryRemoteInfo(allocator: Allocator, repo_url: []const u8) !RemoteInitInfo {
-    var detected_branch: ?[]u8 = null;
-
+fn detectRemoteBranch(allocator: Allocator, repo_url: []const u8) ![]u8 {
     var cmd_list: std.ArrayList([]const u8) = .empty;
     defer cmd_list.deinit(allocator);
     try cmd_list.appendSlice(allocator, &.{ "git", "ls-remote", "--symref", repo_url, "HEAD" });
@@ -50,79 +48,17 @@ fn queryRemoteInfo(allocator: Allocator, repo_url: []const u8) !RemoteInitInfo {
                     var end_idx: usize = 0;
                     while (end_idx < rest.len and rest[end_idx] != ' ' and rest[end_idx] != '\t') : (end_idx += 1) {}
                     if (end_idx > 0) {
-                        detected_branch = try allocator.dupe(u8, rest[0..end_idx]);
-                        break;
+                        return try allocator.dupe(u8, rest[0..end_idx]);
                     }
                 }
             }
         }
     } else |_| {}
 
-    if (detected_branch == null) {
-        detected_branch = try allocator.dupe(u8, defaultBranch());
-    }
-
-    const tmp_dir = try std.fmt.allocPrint(allocator, "/tmp/rice-init-{d}", .{fs.getMilliTimestamp()});
-    defer allocator.free(tmp_dir);
-    try fs.makePath(tmp_dir);
-    defer fs.deleteTreeAbsolute(tmp_dir) catch {};
-
-    try discovery.execGitInDir(allocator, tmp_dir, &.{ "init" });
-    try discovery.execGitInDir(allocator, tmp_dir, &.{ "remote", "add", "origin", repo_url });
-
-    var fetch_branch = detected_branch.?;
-    var fetch_ok = false;
-
-    if (discovery.execGitInDirQuiet(allocator, tmp_dir, &.{ "fetch", "--filter=blob:none", "--depth=1", "origin", fetch_branch })) |_| {
-        fetch_ok = true;
-    } else |_| {
-        if (discovery.execGitInDirQuiet(allocator, tmp_dir, &.{ "fetch", "--depth=1", "origin", fetch_branch })) |_| {
-            fetch_ok = true;
-        } else |_| {}
-    }
-
-    if (!fetch_ok) {
-        const fallbacks = [_][]const u8{ "main", "master", "HEAD" };
-        for (fallbacks) |fb| {
-            if (std.mem.eql(u8, fb, fetch_branch)) continue;
-            if (discovery.execGitInDirQuiet(allocator, tmp_dir, &.{ "fetch", "--filter=blob:none", "--depth=1", "origin", fb })) |_| {
-                fetch_ok = true;
-                allocator.free(detected_branch.?);
-                detected_branch = try allocator.dupe(u8, fb);
-                fetch_branch = detected_branch.?;
-                break;
-            } else |_| {
-                if (discovery.execGitInDirQuiet(allocator, tmp_dir, &.{ "fetch", "--depth=1", "origin", fb })) |_| {
-                    fetch_ok = true;
-                    allocator.free(detected_branch.?);
-                    detected_branch = try allocator.dupe(u8, fb);
-                    fetch_branch = detected_branch.?;
-                    break;
-                } else |_| {}
-            }
-        }
-    }
-
-    var ini_content: ?[]u8 = null;
-
-    if (fetch_ok) {
-        if (discovery.runGitInDirQuiet(allocator, tmp_dir, &.{ "cat-file", "-e", "FETCH_HEAD:.rice.ini" }, true)) |out| {
-            allocator.free(out);
-            if (discovery.runGitInDirQuiet(allocator, tmp_dir, &.{ "show", "FETCH_HEAD:.rice.ini" }, true)) |content| {
-                if (content.len > 0) {
-                    ini_content = content;
-                } else {
-                    allocator.free(content);
-                }
-            } else |_| {}
-        } else |_| {}
-    }
-
-    return RemoteInitInfo{
-        .branch = detected_branch.?,
-        .ini_content = ini_content,
-    };
+    return try allocator.dupe(u8, defaultBranch());
 }
+
+
 
 pub fn initCmd(allocator: Allocator, git: *git_mod.Git, homeDir: []const u8, args: []const []const u8) !void {
     var remote_url_arg: ?[]const u8 = null;
@@ -141,14 +77,8 @@ pub fn initCmd(allocator: Allocator, git: *git_mod.Git, homeDir: []const u8, arg
         };
     }
 
+    fs.deleteTreeAbsolute(git.rice_dir) catch {};
     try git.initBare();
-
-    if (normalized_remote) |nurl| {
-        git.setRemote(nurl) catch |err| {
-            std.debug.print("Error: failed to set remote origin: {s}\n", .{@errorName(err)});
-            return err;
-        };
-    }
 
     const ini_path = try paths.getRiceIniPath(allocator, homeDir);
     defer allocator.free(ini_path);
@@ -157,20 +87,38 @@ pub fn initCmd(allocator: Allocator, git: *git_mod.Git, homeDir: []const u8, arg
     defer if (branch_name) |b| allocator.free(b);
 
     if (normalized_remote) |nurl| {
-        var remote_info = queryRemoteInfo(allocator, nurl) catch null;
-        defer if (remote_info) |*ri| ri.deinit(allocator);
+        git.setRemote(nurl) catch |err| {
+            std.debug.print("Error: failed to set remote origin: {s}\n", .{@errorName(err)});
+            return err;
+        };
 
-        if (remote_info) |*ri| {
-            branch_name = try allocator.dupe(u8, ri.branch);
+        branch_name = detectRemoteBranch(allocator, nurl) catch try allocator.dupe(u8, defaultBranch());
 
-            if (ri.ini_content) |remote_ini_bytes| {
+        _ = git.bareRun(&.{ "fetch", "--depth=1", "origin", branch_name.? }) catch {};
+
+        if (git.output(&.{ "rev-parse", "FETCH_HEAD" })) |fetch_head| {
+            defer allocator.free(fetch_head);
+
+            const bname = branch_name.?;
+            const sym_ref = try std.fmt.allocPrint(allocator, "refs/heads/{s}", .{bname});
+            defer allocator.free(sym_ref);
+
+            _ = git.bareRun(&.{ "symbolic-ref", "HEAD", sym_ref }) catch {};
+            _ = git.bareRun(&.{ "update-ref", sym_ref, "FETCH_HEAD" }) catch {};
+            const upstream_arg = try std.fmt.allocPrint(allocator, "--set-upstream-to=origin/{s}", .{bname});
+            defer allocator.free(upstream_arg);
+            _ = git.bareRun(&.{ "branch", upstream_arg, bname }) catch {};
+            _ = git.bareRun(&.{ "read-tree", "HEAD" }) catch {};
+
+            if (git.getRefFileContent("FETCH_HEAD", ".rice.ini")) |remote_ini_bytes| {
+                defer allocator.free(remote_ini_bytes);
                 if (fs.createFileAbsolute(ini_path, .{ .permissions = @enumFromInt(0o644) })) |f| {
                     var file = f;
                     file.writePositionalAll(paths.getProcessIo(), remote_ini_bytes, 0) catch {};
                     file.close(paths.getProcessIo());
                 } else |_| {}
-            }
-        }
+            } else |_| {}
+        } else |_| {}
     }
 
     var cfg = config.loadConfig(allocator, ini_path) catch blk: {

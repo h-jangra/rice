@@ -101,22 +101,11 @@ pub fn switchCmd(allocator: Allocator, git: *git_mod.Git, homeDir: []const u8, a
             cfg.* = config.Config.init(allocator);
         }
     } else |_| {
-        cfg = try allocator.create(config.Config);
-        cfg.* = config.Config.init(allocator);
-
-        if (git.listRefFiles("HEAD", &.{})) |head_files| {
-            var hf_mut = head_files;
-            defer {
-                for (hf_mut.items) |hf| allocator.free(hf);
-                hf_mut.deinit(allocator);
-            }
-            for (hf_mut.items) |hf| {
-                if (std.mem.eql(u8, hf, ".rice.ini")) continue;
-                const conf_p = try std.fmt.allocPrint(allocator, "~/{s}", .{hf});
-                defer allocator.free(conf_p);
-                _ = cfg.addFile(conf_p) catch {};
-            }
-        } else |_| {}
+        cfg = config.loadConfig(allocator, ini_path) catch blk: {
+            const new_c = try allocator.create(config.Config);
+            new_c.* = config.Config.init(allocator);
+            break :blk new_c;
+        };
     }
     defer {
         cfg.deinit();

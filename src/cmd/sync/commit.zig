@@ -57,71 +57,7 @@ pub fn parseCommitMessage(allocator: Allocator, args: []const []const u8) !?[]u8
     return try allocator.dupe(u8, trimmed);
 }
 
-pub fn stageTrackedFiles(allocator: Allocator, git: *git_mod.Git, homeDir: []const u8, cfg: ?*const config.Config) !void {
-    try git.add(&.{".rice.ini"});
-    if (cfg == null) return;
 
-    for (cfg.?.files.items) |f| {
-        if (paths.absolutePath(allocator, homeDir, f)) |abs_p| {
-            defer allocator.free(abs_p);
-            if (paths.gitPath(allocator, homeDir, f)) |git_p| {
-                defer allocator.free(git_p);
-
-                var exists = false;
-                if (fs.openFileAbsolute(abs_p, .{})) |file| {
-                    file.close(paths.getProcessIo());
-                    exists = true;
-                } else |_| {
-                    if (fs.openDirAbsolute(abs_p, .{})) |d| {
-                        var dir = d;
-                        dir.close(paths.getProcessIo());
-                        exists = true;
-                    } else |_| {}
-                }
-
-                if (exists) {
-                    git.add(&.{git_p}) catch |err| {
-                        std.debug.print("Warning: could not add '{s}': {s}\n", .{ git_p, @errorName(err) });
-                    };
-                } else {
-                    git.addUpdate(&.{git_p}) catch |err| {
-                        std.debug.print("Warning: could not update index for '{s}': {s}\n", .{ git_p, @errorName(err) });
-                    };
-                }
-            } else |_| {}
-        } else |_| {}
-    }
-
-    var all_git_files = git.getAllGitTrackedFiles() catch return;
-    defer {
-        for (all_git_files.items) |gf| allocator.free(gf);
-        all_git_files.deinit(allocator);
-    }
-
-    var to_untrack: std.ArrayList([]const u8) = .empty;
-    defer to_untrack.deinit(allocator);
-
-    for (all_git_files.items) |gf| {
-        if (std.mem.eql(u8, gf, ".rice.ini")) continue;
-
-        var covered = false;
-        for (cfg.?.files.items) |f| {
-            if (paths.gitPath(allocator, homeDir, f)) |gp| {
-                defer allocator.free(gp);
-                if (std.mem.eql(u8, gf, gp) or (std.mem.startsWith(u8, gf, gp) and gf.len > gp.len and gf[gp.len] == '/')) {
-                    covered = true;
-                    break;
-                }
-            } else |_| {}
-        }
-
-        if (!covered) try to_untrack.append(allocator, gf);
-    }
-
-    if (to_untrack.items.len > 0) {
-        _ = git.removeCached(to_untrack.items) catch {};
-    }
-}
 
 const FileChange = struct {
     status: []u8,
@@ -254,7 +190,7 @@ pub fn commitCmd(allocator: Allocator, git: *git_mod.Git, homeDir: []const u8, a
         allocator.destroy(cfg);
     }
 
-    try stageTrackedFiles(allocator, git, homeDir, cfg);
+    _ = git.add(&.{".rice.ini"}) catch {};
 
     const diff = git.output(&.{ "diff", "--cached", "--name-only" }) catch return error.GitDiffFailed;
     defer allocator.free(diff);
@@ -300,9 +236,7 @@ pub fn pushCmd(allocator: Allocator, git: *git_mod.Git, homeDir: []const u8, arg
         }
     }
 
-    if (cfg) |c| {
-        _ = stageTrackedFiles(allocator, git, homeDir, c) catch {};
-    }
+    _ = git.add(&.{".rice.ini"}) catch {};
 
     const staged_diff = git.output(&.{ "diff", "--cached", "--name-status" }) catch null;
     defer if (staged_diff) |sd| allocator.free(sd);

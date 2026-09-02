@@ -165,10 +165,9 @@ pub const Git = struct {
     pub fn status(self: *const Git, files: []const []const u8) !void {
         var args: std.ArrayList([]const u8) = .empty;
         defer args.deinit(self.allocator);
-        try args.appendSlice(self.allocator, &.{ "status", "--" });
-        if (files.len == 0) {
-            try args.append(self.allocator, ".rice.ini");
-        } else {
+        try args.append(self.allocator, "status");
+        if (files.len > 0) {
+            try args.append(self.allocator, "--");
             try args.appendSlice(self.allocator, files);
         }
         try self.run(args.items);

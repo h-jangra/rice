@@ -25,8 +25,6 @@ pub fn freeCmdArgs(allocator: Allocator, list: *std.ArrayList([]const u8), with_
 fn createGitEnv(allocator: Allocator) !std.process.Environ.Map {
     var env_map = try std.process.Environ.createMap(paths.getProcessEnviron(), allocator);
     errdefer env_map.deinit();
-    try env_map.put("GIT_TERMINAL_PROMPT", "0");
-    try env_map.put("GIT_SSH_COMMAND", "ssh -o BatchMode=yes");
     if (env_map.get("GIT_AUTHOR_NAME") == null) try env_map.put("GIT_AUTHOR_NAME", "rice");
     if (env_map.get("GIT_AUTHOR_EMAIL") == null) try env_map.put("GIT_AUTHOR_EMAIL", "rice@localhost");
     if (env_map.get("GIT_COMMITTER_NAME") == null) try env_map.put("GIT_COMMITTER_NAME", "rice");
@@ -48,6 +46,14 @@ pub fn execRun(allocator: Allocator, rice_dir: []const u8, home_dir: []const u8,
     });
     defer allocator.free(res.stdout);
     defer allocator.free(res.stderr);
+
+    if (res.stdout.len > 0) {
+        std.debug.print("{s}", .{res.stdout});
+    }
+
+    if (res.stderr.len > 0 and (res.term != .exited or res.term.exited != 0)) {
+        std.debug.print("{s}", .{res.stderr});
+    }
 
     if (res.term != .exited or res.term.exited != 0) return error.GitCommandFailed;
 }

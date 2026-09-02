@@ -88,8 +88,16 @@ pub fn restoreCmd(allocator: Allocator, git: *git_mod.Git, homeDir: []const u8, 
             file.close(paths.getProcessIo());
             std.debug.print("Restored {s} from repository HEAD.\n", .{ini_path});
         } else |_| {
-            std.debug.print("Error: ~/.rice.ini not found on disk or in repository HEAD.\n", .{});
-            return error.FileNotFound;
+            var cfg = try allocator.create(config.Config);
+            cfg.* = config.Config.init(allocator);
+            defer {
+                cfg.deinit();
+                allocator.destroy(cfg);
+            }
+            if (git.getRemote()) |r| cfg.remote = r else |_| {}
+            if (git.getCurrentBranch()) |b| cfg.branch = b else |_| {}
+            try config.saveConfig(allocator, ini_path, cfg);
+            std.debug.print("Created {s}.\n", .{ini_path});
         }
     }
 

@@ -38,6 +38,31 @@ pub fn pullCmd(allocator: Allocator, git: *git_mod.Git, homeDir: []const u8, arg
         defer allocator.free(local_head);
 
         if (std.mem.eql(u8, local_head, remote_head)) {
+            var ini_exists = false;
+            if (fs.openFileAbsolute(ini_path, .{})) |f| {
+                f.close(paths.getProcessIo());
+                ini_exists = true;
+            } else |_| {}
+
+            if (!ini_exists) {
+                if (git.getHEADFileContent(".rice.ini")) |ini_bytes| {
+                    defer allocator.free(ini_bytes);
+                    if (ini_bytes.len > 0) {
+                        if (fs.createFileAbsolute(ini_path, .{ .permissions = @enumFromInt(0o644) })) |f| {
+                            var file = f;
+                            file.writePositionalAll(paths.getProcessIo(), ini_bytes, 0) catch {};
+                            file.close(paths.getProcessIo());
+                        } else |_| {}
+                    }
+                } else |_| {
+                    var cfg = config.Config.init(allocator);
+                    defer cfg.deinit();
+                    if (git.getRemote()) |r| cfg.remote = r else |_| {}
+                    if (git.getCurrentBranch()) |b| cfg.branch = b else |_| {}
+                    config.saveConfig(allocator, ini_path, &cfg) catch {};
+                }
+            }
+
             std.debug.print("Already up to date.\n", .{});
             return;
         }
@@ -138,37 +163,19 @@ pub fn pullCmd(allocator: Allocator, git: *git_mod.Git, homeDir: []const u8, arg
                 } else |_| {}
             }
         } else |_| {
-            var cfg = config.loadConfig(allocator, ini_path) catch blk: {
-                const new_c = try allocator.create(config.Config);
-                new_c.* = config.Config.init(allocator);
-                break :blk new_c;
-            };
-            defer {
-                cfg.deinit();
-                allocator.destroy(cfg);
+            var ini_exists = false;
+            if (fs.openFileAbsolute(ini_path, .{})) |f| {
+                f.close(paths.getProcessIo());
+                ini_exists = true;
+            } else |_| {}
+
+            if (!ini_exists) {
+                var cfg = config.Config.init(allocator);
+                defer cfg.deinit();
+                if (git.getRemote()) |r| cfg.remote = r else |_| {}
+                if (git.getCurrentBranch()) |b| cfg.branch = b else |_| {}
+                config.saveConfig(allocator, ini_path, &cfg) catch {};
             }
-
-            if (git.listRefFiles("HEAD", &.{})) |head_files| {
-                var hf_mut = head_files;
-                defer {
-                    for (hf_mut.items) |hf| allocator.free(hf);
-                    hf_mut.deinit(allocator);
-                }
-                for (hf_mut.items) |hf| {
-                    if (std.mem.eql(u8, hf, ".rice.ini")) continue;
-                    const conf_p = try std.fmt.allocPrint(allocator, "~/{s}", .{hf});
-                    defer allocator.free(conf_p);
-                    _ = cfg.addFile(conf_p) catch {};
-                }
-            } else |_| {}
-
-            if (git.getCurrentBranch()) |cur_b| {
-                defer allocator.free(cur_b);
-                if (cfg.branch) |b| allocator.free(b);
-                cfg.branch = try allocator.dupe(u8, cur_b);
-            } else |_| {}
-
-            _ = config.saveConfig(allocator, ini_path, cfg) catch {};
         }
     } else {
         var incoming_files = git.listRefFiles("FETCH_HEAD", &.{}) catch std.ArrayList([]u8).empty;
@@ -244,7 +251,21 @@ pub fn pullCmd(allocator: Allocator, git: *git_mod.Git, homeDir: []const u8, arg
                     file.close(paths.getProcessIo());
                 } else |_| {}
             }
-        } else |_| {}
+        } else |_| {
+            var ini_exists = false;
+            if (fs.openFileAbsolute(ini_path, .{})) |f| {
+                f.close(paths.getProcessIo());
+                ini_exists = true;
+            } else |_| {}
+
+            if (!ini_exists) {
+                var cfg = config.Config.init(allocator);
+                defer cfg.deinit();
+                if (git.getRemote()) |r| cfg.remote = r else |_| {}
+                if (git.getCurrentBranch()) |b| cfg.branch = b else |_| {}
+                config.saveConfig(allocator, ini_path, &cfg) catch {};
+            }
+        }
     }
 
     std.debug.print("Successfully pulled and updated dotfiles from origin.\n", .{});

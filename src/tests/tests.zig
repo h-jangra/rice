@@ -363,14 +363,14 @@ test "repo: init with remote saves remote/branch and only fetches .rice.ini if p
     // Files must NOT contain hello.txt (empty because no .rice.ini on remote)
     try std.testing.expectEqual(@as(usize, 0), cfg.files.items.len);
 
-    // Bare repo in fake_home should only have .rice.ini in its HEAD commit, not hello.txt
+    // Bare repo in fake_home should track remote commits (which has hello.txt)
     var head_files = try git.listRefFiles("HEAD", &.{});
     defer {
         for (head_files.items) |hf| allocator.free(hf);
         head_files.deinit(allocator);
     }
     try std.testing.expectEqual(@as(usize, 1), head_files.items.len);
-    try std.testing.expectEqualStrings(".rice.ini", head_files.items[0]);
+    try std.testing.expectEqualStrings("hello.txt", head_files.items[0]);
 }
 
 test "repo: init with remote that has .rice.ini fetches and loads it" {
@@ -564,5 +564,184 @@ test "install: direct file installation into existing directory and dot destinat
 
     const f2 = try fs.openFileAbsolute(target_file2, .{});
     f2.close(paths.getProcessIo());
+}
+
+test "repo: add specific directory only stages and commits that directory without updating other tracked files" {
+    const allocator = std.testing.allocator;
+    const cmd_sync = @import("../cmd/sync.zig");
+
+    const fake_home = try std.fmt.allocPrint(allocator, "/tmp/rice-test-add-dir-{d}", .{fs.getMilliTimestamp()});
+    defer allocator.free(fake_home);
+    try fs.makePath(fake_home);
+    defer fs.deleteTreeAbsolute(fake_home) catch {};
+
+    var git = try git_mod.Git.init(allocator, fake_home);
+    defer git.deinit();
+
+    try cmd_repo.initCmd(allocator, git, fake_home, &.{});
+
+    // 1. Create ~/.zshrc and ~/.config/alacritty/alacritty.toml
+    const zshrc_p = try std.fs.path.join(allocator, &.{ fake_home, ".zshrc" });
+    defer allocator.free(zshrc_p);
+    const f1 = try fs.createFileAbsolute(zshrc_p, .{});
+    try f1.writePositionalAll(paths.getProcessIo(), "export FOO=1\n", 0);
+    f1.close(paths.getProcessIo());
+
+    const alacritty_dir = try std.fs.path.join(allocator, &.{ fake_home, ".config", "alacritty" });
+    defer allocator.free(alacritty_dir);
+    try fs.makePath(alacritty_dir);
+
+    const alacritty_p = try std.fs.path.join(allocator, &.{ alacritty_dir, "alacritty.toml" });
+    defer allocator.free(alacritty_p);
+    const f2 = try fs.createFileAbsolute(alacritty_p, .{});
+    try f2.writePositionalAll(paths.getProcessIo(), "[window]\n", 0);
+    f2.close(paths.getProcessIo());
+
+    try cmd_repo.addCmd(allocator, git, fake_home, &.{ "~/.zshrc", "~/.config/alacritty" });
+    try cmd_sync.commitCmd(allocator, git, fake_home, &.{ "-m", "initial dots" });
+
+    // 2. Modify ~/.zshrc in working tree
+    const f1_mod = try fs.createFileAbsolute(zshrc_p, .{});
+    try f1_mod.writePositionalAll(paths.getProcessIo(), "export FOO=2_MODIFIED\n", 0);
+    f1_mod.close(paths.getProcessIo());
+
+    // 3. Create a new directory ~/.config/nvim/init.lua
+    const nvim_dir = try std.fs.path.join(allocator, &.{ fake_home, ".config", "nvim" });
+    defer allocator.free(nvim_dir);
+    try fs.makePath(nvim_dir);
+
+    const nvim_p = try std.fs.path.join(allocator, &.{ nvim_dir, "init.lua" });
+    defer allocator.free(nvim_p);
+    const f3 = try fs.createFileAbsolute(nvim_p, .{});
+    try f3.writePositionalAll(paths.getProcessIo(), "print('nvim')\n", 0);
+    f3.close(paths.getProcessIo());
+
+    // 4. Add only ~/.config/nvim and commit
+    try cmd_repo.addCmd(allocator, git, fake_home, &.{ "~/.config/nvim" });
+    try cmd_sync.commitCmd(allocator, git, fake_home, &.{ "-m", "add nvim" });
+
+    // 5. Verify HEAD commit only modified .rice.ini and .config/nvim/init.lua, NOT .zshrc
+    const head_diff = try git.output(&.{ "diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD" });
+    defer allocator.free(head_diff);
+
+    try std.testing.expect(std.mem.indexOf(u8, head_diff, ".config/nvim/init.lua") != null);
+    try std.testing.expect(std.mem.indexOf(u8, head_diff, ".rice.ini") != null);
+    try std.testing.expect(std.mem.indexOf(u8, head_diff, ".zshrc") == null);
+
+    // .zshrc in HEAD commit still has the old version
+    const head_zshrc = try git.getHEADFileContent(".zshrc");
+    defer allocator.free(head_zshrc);
+    try std.testing.expectEqualStrings("export FOO=1\n", head_zshrc);
+}
+
+test "sync: pull extracts .rice.ini from remote if present" {
+    const allocator = std.testing.allocator;
+    const cmd_sync = @import("../cmd/sync.zig");
+
+    // 1. Create remote repo with .rice.ini
+    const fake_remote = try std.fmt.allocPrint(allocator, "/tmp/rice-test-remote-pull-ini-{d}", .{fs.getMilliTimestamp()});
+    defer allocator.free(fake_remote);
+    try fs.makePath(fake_remote);
+    defer fs.deleteTreeAbsolute(fake_remote) catch {};
+
+    try discovery.execGitInDir(allocator, fake_remote, &.{ "init", "-b", "main" });
+    try discovery.execGitInDir(allocator, fake_remote, &.{ "config", "user.name", "TestUser" });
+    try discovery.execGitInDir(allocator, fake_remote, &.{ "config", "user.email", "test@example.com" });
+
+    const remote_ini = try std.fs.path.join(allocator, &.{ fake_remote, ".rice.ini" });
+    defer allocator.free(remote_ini);
+    const f = try fs.createFileAbsolute(remote_ini, .{});
+    const ini_data =
+        \\[files]
+        \\~/.config/tmux
+        \\
+    ;
+    try f.writePositionalAll(paths.getProcessIo(), ini_data, 0);
+    f.close(paths.getProcessIo());
+
+    try discovery.execGitInDir(allocator, fake_remote, &.{ "add", ".rice.ini" });
+    try discovery.execGitInDir(allocator, fake_remote, &.{ "commit", "-m", "remote ini" });
+
+    // 2. Local bare repo
+    const fake_home = try std.fmt.allocPrint(allocator, "/tmp/rice-test-home-pull-ini-{d}", .{fs.getMilliTimestamp()});
+    defer allocator.free(fake_home);
+    try fs.makePath(fake_home);
+    defer fs.deleteTreeAbsolute(fake_home) catch {};
+
+    var git = try git_mod.Git.init(allocator, fake_home);
+    defer git.deinit();
+
+    try cmd_repo.initCmd(allocator, git, fake_home, &.{fake_remote});
+
+    // Delete ~/.rice.ini locally to simulate fresh/missing config
+    const ini_path = try paths.getRiceIniPath(allocator, fake_home);
+    defer allocator.free(ini_path);
+    try fs.deleteFileAbsolute(ini_path);
+
+    // 3. Run pull
+    try cmd_sync.pullCmd(allocator, git, fake_home, &.{});
+
+    // 4. Verify ~/.rice.ini was pulled and contains ~/.config/tmux
+    const cfg = try config.loadConfig(allocator, ini_path);
+    defer {
+        cfg.deinit();
+        allocator.destroy(cfg);
+    }
+
+    try std.testing.expect(cfg.hasFile("~/.config/tmux"));
+}
+
+test "sync: pull creates default .rice.ini if not in remote without tracking all files" {
+    const allocator = std.testing.allocator;
+    const cmd_sync = @import("../cmd/sync.zig");
+
+    // 1. Create remote repo with dotfiles but NO .rice.ini
+    const fake_remote = try std.fmt.allocPrint(allocator, "/tmp/rice-test-remote-pull-noini-{d}", .{fs.getMilliTimestamp()});
+    defer allocator.free(fake_remote);
+    try fs.makePath(fake_remote);
+    defer fs.deleteTreeAbsolute(fake_remote) catch {};
+
+    try discovery.execGitInDir(allocator, fake_remote, &.{ "init", "-b", "main" });
+    try discovery.execGitInDir(allocator, fake_remote, &.{ "config", "user.name", "TestUser" });
+    try discovery.execGitInDir(allocator, fake_remote, &.{ "config", "user.email", "test@example.com" });
+
+    const f_p = try std.fs.path.join(allocator, &.{ fake_remote, "my_script.sh" });
+    defer allocator.free(f_p);
+    const f = try fs.createFileAbsolute(f_p, .{});
+    try f.writePositionalAll(paths.getProcessIo(), "echo hi", 0);
+    f.close(paths.getProcessIo());
+
+    try discovery.execGitInDir(allocator, fake_remote, &.{ "add", "my_script.sh" });
+    try discovery.execGitInDir(allocator, fake_remote, &.{ "commit", "-m", "remote script" });
+
+    // 2. Local bare repo
+    const fake_home = try std.fmt.allocPrint(allocator, "/tmp/rice-test-home-pull-noini-{d}", .{fs.getMilliTimestamp()});
+    defer allocator.free(fake_home);
+    try fs.makePath(fake_home);
+    defer fs.deleteTreeAbsolute(fake_home) catch {};
+
+    var git = try git_mod.Git.init(allocator, fake_home);
+    defer git.deinit();
+
+    try cmd_repo.initCmd(allocator, git, fake_home, &.{fake_remote});
+
+    // Delete ~/.rice.ini locally
+    const ini_path = try paths.getRiceIniPath(allocator, fake_home);
+    defer allocator.free(ini_path);
+    try fs.deleteFileAbsolute(ini_path);
+
+    // 3. Run pull
+    try cmd_sync.pullCmd(allocator, git, fake_home, &.{});
+
+    // 4. Verify ~/.rice.ini was created with empty files list (does NOT track my_script.sh)
+    const cfg = try config.loadConfig(allocator, ini_path);
+    defer {
+        cfg.deinit();
+        allocator.destroy(cfg);
+    }
+
+    try std.testing.expectEqualStrings(fake_remote, cfg.remote.?);
+    try std.testing.expectEqualStrings("main", cfg.branch.?);
+    try std.testing.expectEqual(@as(usize, 0), cfg.files.items.len);
 }
 

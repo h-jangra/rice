@@ -29,12 +29,26 @@ pub fn editCmd(allocator: Allocator, homeDir: []const u8, args: []const []const 
     var allocated_ed: ?[]u8 = null;
     defer if (allocated_ed) |ed| allocator.free(ed);
 
-    if (std.process.Environ.getAlloc(paths.getProcessEnviron(), allocator, "EDITOR")) |ed| {
-        allocated_ed = ed;
+    const env = paths.getProcessEnviron();
+    if (std.process.Environ.getAlloc(env, allocator, "VISUAL")) |ed| {
         if (std.mem.trim(u8, ed, " \t\r\n").len > 0) {
+            allocated_ed = ed;
             editor_str = std.mem.trim(u8, ed, " \t\r\n");
+        } else {
+            allocator.free(ed);
         }
     } else |_| {}
+
+    if (allocated_ed == null) {
+        if (std.process.Environ.getAlloc(env, allocator, "EDITOR")) |ed| {
+            if (std.mem.trim(u8, ed, " \t\r\n").len > 0) {
+                allocated_ed = ed;
+                editor_str = std.mem.trim(u8, ed, " \t\r\n");
+            } else {
+                allocator.free(ed);
+            }
+        } else |_| {}
+    }
 
     var it = std.mem.splitScalar(u8, editor_str, ' ');
     var cmd_list: std.ArrayList([]const u8) = .empty;
@@ -48,12 +62,19 @@ pub fn editCmd(allocator: Allocator, homeDir: []const u8, args: []const []const 
     }
     try cmd_list.append(allocator, ini_path);
 
-    var child = try std.process.spawn(paths.getProcessIo(), .{
+    var env_map = try std.process.Environ.createMap(env, allocator);
+    defer env_map.deinit();
+
+    var child = std.process.spawn(paths.getProcessIo(), .{
         .argv = cmd_list.items,
         .stdin = .inherit,
         .stdout = .inherit,
         .stderr = .inherit,
-    });
+        .environ_map = &env_map,
+    }) catch |err| {
+        std.debug.print("Error: failed to open editor '{s}': {s}\n", .{ cmd_list.items[0], @errorName(err) });
+        return err;
+    };
 
     const term = try child.wait(paths.getProcessIo());
     if (term != .exited or term.exited != 0) {

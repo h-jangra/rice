@@ -7,6 +7,7 @@ const ui = @import("../core/ui.zig");
 const git_mod = @import("../core/git.zig");
 const cmd_repo = @import("../cmd/repo.zig");
 const discovery = @import("../core/install/discovery.zig");
+const manifest = @import("../core/install/manifest.zig");
 
 test "ui: spinner basic lifecycle" {
     const allocator = std.testing.allocator;
@@ -949,10 +950,302 @@ test "repo: status only shows staged by default and -a shows all" {
 
     // 2. Calling status with -a should run cleanly (showing both staged .zshrc and modified app.conf)
     try cmd_repo.statusCmd(allocator, git, fake_home, &.{"-a"});
-
     // 3. Calling status with git params like -s or --all should run cleanly
     try cmd_repo.statusCmd(allocator, git, fake_home, &.{"-s"});
 }
 
+test "install: interactive manifest collection and validation with nested paths" {
+    const allocator = std.testing.allocator;
 
+    const tmp_src = try std.fmt.allocPrint(allocator, "/tmp/rice-test-manifest-nested-{d}", .{fs.getMilliTimestamp()});
+    defer allocator.free(tmp_src);
+    try fs.makePath(tmp_src);
+    defer fs.deleteTreeAbsolute(tmp_src) catch {};
 
+    // Create nested directory structure
+    const p1 = try std.fs.path.join(allocator, &.{ tmp_src, ".config", "kitty", "kitty.conf" });
+    defer allocator.free(p1);
+    const p2 = try std.fs.path.join(allocator, &.{ tmp_src, ".config", "mango", "config" });
+    defer allocator.free(p2);
+    const p3 = try std.fs.path.join(allocator, &.{ tmp_src, ".local", "bin", "foo" });
+    defer allocator.free(p3);
+    const p4 = try std.fs.path.join(allocator, &.{ tmp_src, "README.md" });
+    defer allocator.free(p4);
+    const p5 = try std.fs.path.join(allocator, &.{ tmp_src, "LICENSE" });
+    defer allocator.free(p5);
+
+    try fs.makePath(std.fs.path.dirname(p1).?);
+    const f1 = try fs.createFileAbsolute(p1, .{});
+    f1.close(paths.getProcessIo());
+
+    try fs.makePath(std.fs.path.dirname(p2).?);
+    const f2 = try fs.createFileAbsolute(p2, .{});
+    f2.close(paths.getProcessIo());
+
+    try fs.makePath(std.fs.path.dirname(p3).?);
+    const f3 = try fs.createFileAbsolute(p3, .{});
+    f3.close(paths.getProcessIo());
+
+    const f4 = try fs.createFileAbsolute(p4, .{});
+    f4.close(paths.getProcessIo());
+
+    const f5 = try fs.createFileAbsolute(p5, .{});
+    f5.close(paths.getProcessIo());
+
+    var files = try manifest.collectSourceFiles(allocator, tmp_src);
+    defer {
+        for (files.items) |f| allocator.free(f);
+        files.deinit(allocator);
+    }
+
+    try std.testing.expectEqual(@as(usize, 5), files.items.len);
+    try std.testing.expectEqualStrings(".config/kitty/kitty.conf", files.items[0]);
+    try std.testing.expectEqualStrings(".config/mango/config", files.items[1]);
+    try std.testing.expectEqualStrings(".local/bin/foo", files.items[2]);
+    try std.testing.expectEqualStrings("LICENSE", files.items[3]);
+    try std.testing.expectEqualStrings("README.md", files.items[4]);
+
+    const manifest_path = try std.fmt.allocPrint(allocator, "/tmp/rice-manifest-test-{d}.txt", .{fs.getMilliTimestamp()});
+    defer allocator.free(manifest_path);
+    defer fs.deleteFileAbsolute(manifest_path) catch {};
+
+    try manifest.generateManifestFile(allocator, manifest_path, files.items);
+
+    var read_lines = try manifest.readManifestFile(allocator, manifest_path);
+    defer {
+        for (read_lines.items) |l| allocator.free(l);
+        read_lines.deinit(allocator);
+    }
+    try std.testing.expectEqual(@as(usize, 5), read_lines.items.len);
+
+    var validated = try manifest.validateManifestPaths(allocator, read_lines.items, files.items, tmp_src);
+    defer {
+        for (validated.items) |v| allocator.free(v);
+        validated.deinit(allocator);
+    }
+    try std.testing.expectEqual(@as(usize, 5), validated.items.len);
+}
+
+test "install: interactive manifest deletion of entries" {
+    const allocator = std.testing.allocator;
+
+    const tmp_src = try std.fmt.allocPrint(allocator, "/tmp/rice-test-del-{d}", .{fs.getMilliTimestamp()});
+    defer allocator.free(tmp_src);
+    try fs.makePath(tmp_src);
+    defer fs.deleteTreeAbsolute(tmp_src) catch {};
+
+    const original_files = [_][]const u8{
+        ".config/kitty/kitty.conf",
+        ".config/mango/config",
+        ".local/bin/foo",
+        "README.md",
+    };
+
+    for (original_files) |rel| {
+        const full = try std.fs.path.join(allocator, &.{ tmp_src, rel });
+        defer allocator.free(full);
+        if (std.fs.path.dirname(full)) |d| try fs.makePath(d);
+        const f = try fs.createFileAbsolute(full, .{});
+        f.close(paths.getProcessIo());
+    }
+
+    // Simulate user deleting .local/bin/foo and README.md
+    const remaining_from_user = [_][]const u8{
+        ".config/kitty/kitty.conf",
+        ".config/mango/config",
+    };
+
+    var validated = try manifest.validateManifestPaths(allocator, &remaining_from_user, &original_files, tmp_src);
+    defer {
+        for (validated.items) |v| allocator.free(v);
+        validated.deinit(allocator);
+    }
+
+    try std.testing.expectEqual(@as(usize, 2), validated.items.len);
+    try std.testing.expectEqualStrings(".config/kitty/kitty.conf", validated.items[0]);
+    try std.testing.expectEqualStrings(".config/mango/config", validated.items[1]);
+
+    const selected_count = validated.items.len;
+    const discarded_count = original_files.len - selected_count;
+    try std.testing.expectEqual(@as(usize, 2), selected_count);
+    try std.testing.expectEqual(@as(usize, 2), discarded_count);
+}
+
+test "install: interactive manifest invalid entries rejected" {
+    const allocator = std.testing.allocator;
+
+    const tmp_src = try std.fmt.allocPrint(allocator, "/tmp/rice-test-invalid-{d}", .{fs.getMilliTimestamp()});
+    defer allocator.free(tmp_src);
+    try fs.makePath(tmp_src);
+    defer fs.deleteTreeAbsolute(tmp_src) catch {};
+
+    const p = try std.fs.path.join(allocator, &.{ tmp_src, "valid.txt" });
+    defer allocator.free(p);
+    const f = try fs.createFileAbsolute(p, .{});
+    f.close(paths.getProcessIo());
+
+    const original_files = [_][]const u8{"valid.txt"};
+    const remaining_with_fake = [_][]const u8{ "valid.txt", "untrusted/injected.txt" };
+
+    try std.testing.expectError(error.InvalidManifestEntry, manifest.validateManifestPaths(allocator, &remaining_with_fake, &original_files, tmp_src));
+}
+
+test "install: interactive manifest path traversal protection" {
+    const allocator = std.testing.allocator;
+
+    const tmp_src = try std.fmt.allocPrint(allocator, "/tmp/rice-test-traversal-{d}", .{fs.getMilliTimestamp()});
+    defer allocator.free(tmp_src);
+    try fs.makePath(tmp_src);
+    defer fs.deleteTreeAbsolute(tmp_src) catch {};
+
+    const p = try std.fs.path.join(allocator, &.{ tmp_src, "file.txt" });
+    defer allocator.free(p);
+    const f = try fs.createFileAbsolute(p, .{});
+    f.close(paths.getProcessIo());
+
+    const original_files = [_][]const u8{"file.txt"};
+
+    // Traversal cases
+    try std.testing.expectError(error.PathTraversal, manifest.validateManifestPaths(allocator, &[_][]const u8{"../../etc/passwd"}, &original_files, tmp_src));
+    try std.testing.expectError(error.PathTraversal, manifest.validateManifestPaths(allocator, &[_][]const u8{"/etc/shadow"}, &original_files, tmp_src));
+    try std.testing.expectError(error.PathTraversal, manifest.validateManifestPaths(allocator, &[_][]const u8{"~/.ssh/id_rsa"}, &original_files, tmp_src));
+    try std.testing.expectError(error.PathTraversal, manifest.validateManifestPaths(allocator, &[_][]const u8{"sub/../../escape.txt"}, &original_files, tmp_src));
+}
+
+test "install: interactive manifest preserves paths with spaces" {
+    const allocator = std.testing.allocator;
+
+    const tmp_src = try std.fmt.allocPrint(allocator, "/tmp/rice-test-spaces-src-{d}", .{fs.getMilliTimestamp()});
+    defer allocator.free(tmp_src);
+    try fs.makePath(tmp_src);
+    defer fs.deleteTreeAbsolute(tmp_src) catch {};
+
+    const tmp_dst = try std.fmt.allocPrint(allocator, "/tmp/rice-test-spaces-dst-{d}", .{fs.getMilliTimestamp()});
+    defer allocator.free(tmp_dst);
+    try fs.makePath(tmp_dst);
+    defer fs.deleteTreeAbsolute(tmp_dst) catch {};
+
+    const space_rel = "folder with spaces/file with spaces.conf";
+    const space_src = try std.fs.path.join(allocator, &.{ tmp_src, space_rel });
+    defer allocator.free(space_src);
+    try fs.makePath(std.fs.path.dirname(space_src).?);
+
+    const f = try fs.createFileAbsolute(space_src, .{});
+    try f.writePositionalAll(paths.getProcessIo(), "space content\n", 0);
+    f.close(paths.getProcessIo());
+
+    var collected = try manifest.collectSourceFiles(allocator, tmp_src);
+    defer {
+        for (collected.items) |item| allocator.free(item);
+        collected.deinit(allocator);
+    }
+    try std.testing.expectEqual(@as(usize, 1), collected.items.len);
+    try std.testing.expectEqualStrings(space_rel, collected.items[0]);
+
+    const manifest_path = try std.fmt.allocPrint(allocator, "/tmp/rice-manifest-spaces-{d}.txt", .{fs.getMilliTimestamp()});
+    defer allocator.free(manifest_path);
+    defer fs.deleteFileAbsolute(manifest_path) catch {};
+
+    try manifest.generateManifestFile(allocator, manifest_path, collected.items);
+
+    var read_lines = try manifest.readManifestFile(allocator, manifest_path);
+    defer {
+        for (read_lines.items) |item| allocator.free(item);
+        read_lines.deinit(allocator);
+    }
+    try std.testing.expectEqualStrings(space_rel, read_lines.items[0]);
+
+    var validated = try manifest.validateManifestPaths(allocator, read_lines.items, collected.items, tmp_src);
+    defer {
+        for (validated.items) |item| allocator.free(item);
+        validated.deinit(allocator);
+    }
+    try std.testing.expectEqualStrings(space_rel, validated.items[0]);
+
+    // Test installation
+    const dst_file = try std.fs.path.join(allocator, &.{ tmp_dst, space_rel });
+    defer allocator.free(dst_file);
+    try fs.installPath(allocator, space_src, dst_file);
+
+    try std.testing.expect(fs.isFileAbsolute(dst_file));
+}
+
+test "install: interactive editor cancellation does not modify user files" {
+    const allocator = std.testing.allocator;
+
+    const tmp_src = try std.fmt.allocPrint(allocator, "/tmp/rice-test-cancel-src-{d}", .{fs.getMilliTimestamp()});
+    defer allocator.free(tmp_src);
+    try fs.makePath(tmp_src);
+    defer fs.deleteTreeAbsolute(tmp_src) catch {};
+
+    const tmp_dst = try std.fmt.allocPrint(allocator, "/tmp/rice-test-cancel-dst-{d}", .{fs.getMilliTimestamp()});
+    defer allocator.free(tmp_dst);
+    try fs.makePath(tmp_dst);
+    defer fs.deleteTreeAbsolute(tmp_dst) catch {};
+
+    const sf = try std.fs.path.join(allocator, &.{ tmp_src, "test.txt" });
+    defer allocator.free(sf);
+    const f = try fs.createFileAbsolute(sf, .{});
+    try f.writePositionalAll(paths.getProcessIo(), "data\n", 0);
+    f.close(paths.getProcessIo());
+
+    // Run interactive install with editor command that exits non-zero (false)
+    const res = manifest.runInteractiveInstall(allocator, tmp_dst, tmp_src, tmp_dst, true, "false");
+    try std.testing.expectError(error.EditorFailed, res);
+
+    // Target file in destination should NOT have been created
+    const df = try std.fs.path.join(allocator, &.{ tmp_dst, "test.txt" });
+    defer allocator.free(df);
+    try std.testing.expect(!fs.isFileAbsolute(df));
+}
+
+test "install: interactive workflow installs only remaining paths" {
+    const allocator = std.testing.allocator;
+
+    const tmp_src = try std.fmt.allocPrint(allocator, "/tmp/rice-test-wf-src-{d}", .{fs.getMilliTimestamp()});
+    defer allocator.free(tmp_src);
+    try fs.makePath(tmp_src);
+    defer fs.deleteTreeAbsolute(tmp_src) catch {};
+
+    const tmp_dst = try std.fmt.allocPrint(allocator, "/tmp/rice-test-wf-dst-{d}", .{fs.getMilliTimestamp()});
+    defer allocator.free(tmp_dst);
+    try fs.makePath(tmp_dst);
+    defer fs.deleteTreeAbsolute(tmp_dst) catch {};
+
+    // Create 3 files: keep1.txt, delete_me.txt, keep2.txt
+    const files = [_][]const u8{ "keep1.txt", "delete_me.txt", "keep2.txt" };
+    for (files) |name| {
+        const p = try std.fs.path.join(allocator, &.{ tmp_src, name });
+        defer allocator.free(p);
+        const f = try fs.createFileAbsolute(p, .{});
+        try f.writePositionalAll(paths.getProcessIo(), name, 0);
+        f.close(paths.getProcessIo());
+    }
+
+    // Create mock editor script that deletes line containing "delete_me"
+    const script_path = try std.fmt.allocPrint(allocator, "/tmp/rice-mock-editor-{d}.sh", .{fs.getMilliTimestamp()});
+    defer allocator.free(script_path);
+    defer fs.deleteFileAbsolute(script_path) catch {};
+
+    const script_content =
+        \\#!/bin/sh
+        \\grep -v "delete_me" "$1" > "$1.tmp" && mv "$1.tmp" "$1"
+        \\exit 0
+    ;
+    const sf = try fs.createFileAbsolute(script_path, .{ .permissions = @enumFromInt(0o755) });
+    try sf.writePositionalAll(paths.getProcessIo(), script_content, 0);
+    sf.close(paths.getProcessIo());
+
+    try manifest.runInteractiveInstall(allocator, tmp_dst, tmp_src, tmp_dst, true, script_path);
+
+    const dst1 = try std.fs.path.join(allocator, &.{ tmp_dst, "keep1.txt" });
+    defer allocator.free(dst1);
+    const dst2 = try std.fs.path.join(allocator, &.{ tmp_dst, "delete_me.txt" });
+    defer allocator.free(dst2);
+    const dst3 = try std.fs.path.join(allocator, &.{ tmp_dst, "keep2.txt" });
+    defer allocator.free(dst3);
+
+    try std.testing.expect(fs.isFileAbsolute(dst1));
+    try std.testing.expect(!fs.isFileAbsolute(dst2)); // Must NOT be installed!
+    try std.testing.expect(fs.isFileAbsolute(dst3));
+}

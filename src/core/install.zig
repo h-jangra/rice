@@ -3,6 +3,7 @@ pub const discovery = @import("install/discovery.zig");
 pub const sparse = @import("install/sparse.zig");
 pub const bin_cmd = @import("install/bin_cmd.zig");
 pub const entry = @import("install/entry.zig");
+pub const manifest = @import("install/manifest.zig");
 
 pub const defaultBranch = sparse.defaultBranch;
 pub const printInstallUsage = sparse.printInstallUsage;

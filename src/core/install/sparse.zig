@@ -8,6 +8,7 @@ const fs = @import("../fs.zig");
 const discovery = @import("discovery.zig");
 const url = @import("url.zig");
 const ui = @import("../ui.zig");
+const manifest_mod = @import("manifest.zig");
 
 pub fn defaultBranch() []const u8 {
     if (builtin.os.tag == .windows) return "windows";
@@ -61,6 +62,7 @@ pub fn printInstallHelp() void {
         \\  -b, --branch <name> Branch name (default: main on unix, windows on windows)
         \\  -C, --contents      Extract directory contents directly into destination
         \\  -f, --force, -y     Overwrite existing files without confirmation prompts
+        \\  -i, --interactive   Select files to install via $EDITOR manifest
         \\
         \\Examples:
         \\  rice install --repo https://github.com/h-jangra/dots -b master
@@ -99,6 +101,7 @@ pub fn installDotfiles(allocator: Allocator, git: *git_mod.Git, homeDir: []const
     var branch_flag: ?[]const u8 = null;
     var contents_flag = false;
     var force_flag = false;
+    var interactive_flag = false;
     var positional: std.ArrayList([]const u8) = .empty;
     defer positional.deinit(allocator);
 
@@ -131,6 +134,8 @@ pub fn installDotfiles(allocator: Allocator, git: *git_mod.Git, homeDir: []const
             contents_flag = true;
         } else if (std.mem.eql(u8, arg, "-f") or std.mem.eql(u8, arg, "--force") or std.mem.eql(u8, arg, "-y") or std.mem.eql(u8, arg, "--yes")) {
             force_flag = true;
+        } else if (std.mem.eql(u8, arg, "-i") or std.mem.eql(u8, arg, "--interactive")) {
+            interactive_flag = true;
         } else if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
             printInstallHelp();
             return;
@@ -187,10 +192,26 @@ pub fn installDotfiles(allocator: Allocator, git: *git_mod.Git, homeDir: []const
                     });
                 }
             } else |_| {
-                return url.runDirectURLInstall(allocator, homeDir, raw, ".", contents_flag, force_flag);
+                return url.runDirectURLInstallInteractive(allocator, homeDir, raw, ".", contents_flag, force_flag, interactive_flag);
             }
+        } else if (fs.isArchive(raw)) {
+            return url.runDirectURLInstallInteractive(allocator, homeDir, raw, ".", contents_flag, force_flag, interactive_flag);
         } else {
-            needs_remote_discovery = raw;
+            if (repo_flag == null and (std.mem.indexOfScalar(u8, raw, '/') != null or std.mem.endsWith(u8, raw, ".git"))) {
+                const norm = paths.normalizeRepoURL(allocator, raw) catch null;
+                if (norm) |nr| {
+                    if (!std.mem.eql(u8, nr, raw)) {
+                        repo_url = nr;
+                    } else {
+                        allocator.free(nr);
+                        needs_remote_discovery = raw;
+                    }
+                } else {
+                    needs_remote_discovery = raw;
+                }
+            } else {
+                needs_remote_discovery = raw;
+            }
         }
     } else if (positional.items.len == 2) {
         const raw_src = positional.items[0];
@@ -220,8 +241,10 @@ pub fn installDotfiles(allocator: Allocator, git: *git_mod.Git, homeDir: []const
                     });
                 }
             } else |_| {
-                return url.runDirectURLInstall(allocator, homeDir, raw_src, raw_dst, contents_flag, force_flag);
+                return url.runDirectURLInstallInteractive(allocator, homeDir, raw_src, raw_dst, contents_flag, force_flag, interactive_flag);
             }
+        } else if (fs.isArchive(raw_src)) {
+            return url.runDirectURLInstallInteractive(allocator, homeDir, raw_src, raw_dst, contents_flag, force_flag, interactive_flag);
         } else {
             const clean_src = try paths.validateSourcePath(allocator, raw_src);
             defer allocator.free(clean_src);
@@ -341,6 +364,47 @@ pub fn installDotfiles(allocator: Allocator, git: *git_mod.Git, homeDir: []const
     if (!fetch_success) {
         std.debug.print("Error: failed to fetch branch '{s}' from {s}\n", .{ branch_str, final_repo.? });
         return error.GitFetchFailed;
+    }
+
+    if (interactive_flag) {
+        {
+            const dl_msg = try std.fmt.allocPrint(allocator, "Downloading from {s}...", .{final_repo.?});
+            defer allocator.free(dl_msg);
+            const dl_sp = try ui.Spinner.start(allocator, dl_msg);
+            defer dl_sp.stop();
+
+            discovery.execGitInDirQuiet(allocator, tmp_dir_path, &.{ "sparse-checkout", "disable" }) catch {};
+            try discovery.execGitInDir(allocator, tmp_dir_path, &.{ "checkout", "--detach", "FETCH_HEAD" });
+        }
+
+        var source_root = tmp_dir_path;
+        var allocated_root: ?[]u8 = null;
+        defer if (allocated_root) |ar| allocator.free(ar);
+
+        if (needs_remote_discovery) |name| {
+            if (discovery.resolveRemoteConfig(allocator, tmp_dir_path, branch_str, name)) |resolved| {
+                defer allocator.free(resolved.dest_config_path);
+                defer allocator.free(resolved.repo_path);
+                const test_p = try std.fs.path.join(allocator, &.{ tmp_dir_path, resolved.repo_path });
+                if (fs.isDirAbsolute(test_p)) {
+                    allocated_root = test_p;
+                    source_root = allocated_root.?;
+                } else {
+                    allocator.free(test_p);
+                }
+            } else |_| {}
+        } else if (items.items.len > 0) {
+            const test_p = try std.fs.path.join(allocator, &.{ tmp_dir_path, items.items[0].repo_path });
+            if (fs.isDirAbsolute(test_p)) {
+                allocated_root = test_p;
+                source_root = allocated_root.?;
+            } else {
+                allocator.free(test_p);
+            }
+        }
+
+        const custom_dst = if (positional.items.len == 2) positional.items[1] else null;
+        return manifest_mod.runInteractiveInstall(allocator, homeDir, source_root, custom_dst, force_flag, null);
     }
 
     if (needs_remote_discovery) |name| {

@@ -5,8 +5,13 @@ const paths = @import("../paths.zig");
 const fs = @import("../fs.zig");
 const ui = @import("../ui.zig");
 const bin_mod = @import("../bin.zig");
+const manifest_mod = @import("manifest.zig");
 
 pub fn runDirectURLInstall(allocator: Allocator, homeDir: []const u8, rawURL: []const u8, rawDest: []const u8, contentsFlag: bool, forceFlag: bool) !void {
+    return runDirectURLInstallInteractive(allocator, homeDir, rawURL, rawDest, contentsFlag, forceFlag, false);
+}
+
+pub fn runDirectURLInstallInteractive(allocator: Allocator, homeDir: []const u8, rawURL: []const u8, rawDest: []const u8, contentsFlag: bool, forceFlag: bool, interactiveFlag: bool) !void {
     const tmp_dir_path = try std.fmt.allocPrint(allocator, "/tmp/rice-dl-{d}", .{fs.getMilliTimestamp()});
     defer allocator.free(tmp_dir_path);
     try fs.makePath(tmp_dir_path);
@@ -180,6 +185,11 @@ pub fn runDirectURLInstall(allocator: Allocator, homeDir: []const u8, rawURL: []
             if (single_child_name) |scn| allocator.free(scn);
         }
 
+        if (interactiveFlag) {
+            const custom_dst = if (std.mem.eql(u8, rawDest, ".")) null else rawDest;
+            return manifest_mod.runInteractiveInstall(allocator, homeDir, target_extract_path, custom_dst, forceFlag, null);
+        }
+
         var use_sudo = false;
         fs.makePath(dest_abs) catch |err| {
             if ((err == error.AccessDenied or err == error.PermissionDenied) and builtin.os.tag != .windows) {
@@ -245,6 +255,11 @@ pub fn runDirectURLInstall(allocator: Allocator, homeDir: []const u8, rawURL: []
             }
         }
     } else {
+        if (interactiveFlag) {
+            const custom_dst = if (std.mem.eql(u8, rawDest, ".")) null else rawDest;
+            return manifest_mod.runInteractiveInstall(allocator, homeDir, tmp_dir_path, custom_dst, forceFlag, null);
+        }
+
         fs.installPath(allocator, dl_path, dest_abs) catch |err| {
             if (err == error.AccessDenied or err == error.PermissionDenied) {
                 std.debug.print("Error: permission denied installing to '{s}'. Try running with sudo or check permissions.\n", .{dest_abs});

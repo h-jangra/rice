@@ -193,6 +193,7 @@ const command_help_map = std.StaticStringMap([]const u8).initComptime(.{
         \\  --repo <url>        Remote repository URL (defaults to ~/.rice.ini repo)
         \\  -b, --branch <name> Branch name (default: main on unix, windows on windows)
         \\  --contents, -C      Extract directory contents directly into destination
+        \\  -i, --interactive   Select files to install via $EDITOR manifest
         \\
         \\Examples:
         \\  rice install nvim

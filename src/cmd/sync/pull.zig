@@ -1,7 +1,7 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
-const git_mod = @import("../../core/git/mod.zig");
-const paths = @import("../../core/paths/mod.zig");
+const git_mod = @import("../../core/git.zig");
+const paths = @import("../../core/paths.zig");
 const config = @import("../../core/config.zig");
 const fs = @import("../../core/fs.zig");
 

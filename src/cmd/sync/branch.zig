@@ -1,7 +1,7 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
-const git_mod = @import("../../core/git/mod.zig");
-const paths = @import("../../core/paths/mod.zig");
+const git_mod = @import("../../core/git.zig");
+const paths = @import("../../core/paths.zig");
 const config = @import("../../core/config.zig");
 const fs = @import("../../core/fs.zig");
 
@@ -82,6 +82,7 @@ pub fn switchCmd(allocator: Allocator, git: *git_mod.Git, homeDir: []const u8, a
     }
     defer if (existing_remote) |r| allocator.free(r);
 
+    var has_ini = false;
     var cfg: *config.Config = undefined;
     if (git.getHEADFileContent(".rice.ini")) |ini_bytes| {
         defer allocator.free(ini_bytes);
@@ -91,35 +92,44 @@ pub fn switchCmd(allocator: Allocator, git: *git_mod.Git, homeDir: []const u8, a
                 file.writePositionalAll(paths.getProcessIo(), ini_bytes, 0) catch {};
                 file.close(paths.getProcessIo());
             } else |_| {}
-            cfg = config.loadConfig(allocator, ini_path) catch blk: {
+            cfg = config.loadConfigOrDefault(allocator, ini_path) catch blk: {
                 const new_c = try allocator.create(config.Config);
                 new_c.* = config.Config.init(allocator);
                 break :blk new_c;
             };
+            has_ini = true;
         } else {
             cfg = try allocator.create(config.Config);
             cfg.* = config.Config.init(allocator);
         }
     } else |_| {
-        cfg = config.loadConfig(allocator, ini_path) catch blk: {
-            const new_c = try allocator.create(config.Config);
-            new_c.* = config.Config.init(allocator);
-            break :blk new_c;
-        };
+        if (fs.isFileAbsolute(ini_path)) {
+            cfg = config.loadConfigOrDefault(allocator, ini_path) catch blk: {
+                const new_c = try allocator.create(config.Config);
+                new_c.* = config.Config.init(allocator);
+                break :blk new_c;
+            };
+            has_ini = true;
+        } else {
+            cfg = try allocator.create(config.Config);
+            cfg.* = config.Config.init(allocator);
+        }
     }
     defer {
         cfg.deinit();
         allocator.destroy(cfg);
     }
 
-    if (cfg.remote == null and existing_remote != null) {
-        cfg.remote = try allocator.dupe(u8, existing_remote.?);
+    if (has_ini) {
+        if (cfg.remote == null and existing_remote != null) {
+            cfg.remote = try allocator.dupe(u8, existing_remote.?);
+        }
+
+        if (cfg.branch) |b| allocator.free(b);
+        cfg.branch = try allocator.dupe(u8, branch_name.?);
+
+        try config.saveConfig(allocator, ini_path, cfg);
     }
-
-    if (cfg.branch) |b| allocator.free(b);
-    cfg.branch = try allocator.dupe(u8, branch_name.?);
-
-    try config.saveConfig(allocator, ini_path, cfg);
 }
 
 pub fn branchesCmd(allocator: Allocator, git: *git_mod.Git, args: []const []const u8) !void {
@@ -128,7 +138,33 @@ pub fn branchesCmd(allocator: Allocator, git: *git_mod.Git, args: []const []cons
         return error.BareRepoInvalid;
     }
 
-    const out = try git.branchList(args);
+    var branch_args: std.ArrayList([]const u8) = .empty;
+    defer branch_args.deinit(allocator);
+
+    var show_remote = false;
+    for (args) |arg| {
+        if (std.mem.eql(u8, arg, "-a") or std.mem.eql(u8, arg, "--all")) {
+            show_remote = true;
+            try branch_args.append(allocator, "-a");
+        } else if (std.mem.eql(u8, arg, "-r") or std.mem.eql(u8, arg, "--remotes")) {
+            show_remote = true;
+            try branch_args.append(allocator, "-r");
+        } else {
+            try branch_args.append(allocator, arg);
+        }
+    }
+
+    if (show_remote) {
+        if (git.getRemote()) |rurl| {
+            defer allocator.free(rurl);
+            if (rurl.len > 0) {
+                _ = git.bareRunQuiet(&.{ "config", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*" }) catch {};
+                _ = git.bareRunQuiet(&.{ "fetch", "--prune", "origin" }) catch {};
+            }
+        } else |_| {}
+    }
+
+    const out = try git.branchList(branch_args.items);
     defer allocator.free(out);
 
     if (out.len == 0) {
@@ -139,7 +175,7 @@ pub fn branchesCmd(allocator: Allocator, git: *git_mod.Git, args: []const []cons
     var lines = std.mem.splitScalar(u8, out, '\n');
     while (lines.next()) |line| {
         const clean = std.mem.trimEnd(u8, line, "\r");
-        if (std.mem.trim(u8, clean, " \t").len > 0) std.debug.print("{s}\n", .{clean});
+        if (clean.len > 0) std.debug.print("{s}\n", .{clean});
     }
 }
 

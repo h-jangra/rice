@@ -1,6 +1,6 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
-const paths = @import("../paths/mod.zig");
+const paths = @import("../paths.zig");
 const fs = @import("../fs.zig");
 
 pub const BinarySourceType = enum { github, url, local };

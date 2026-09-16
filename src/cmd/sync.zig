@@ -1,21 +1,19 @@
-pub const sync = @import("sync/mod.zig");
+pub const commit = @import("sync/commit.zig");
+pub const pull = @import("sync/pull.zig");
+pub const branch = @import("sync/branch.zig");
+pub const restore = @import("sync/restore.zig");
 
-pub const commit = sync.commit;
-pub const pull = sync.pull;
-pub const branch = sync.branch;
-pub const restore = sync.restore;
+pub const parseCommitMessage = commit.parseCommitMessage;
+pub const generateAutoCommitMessage = commit.generateAutoCommitMessage;
+pub const commitCmd = commit.commitCmd;
+pub const pushCmd = commit.pushCmd;
 
-pub const parseCommitMessage = sync.parseCommitMessage;
-pub const stageTrackedFiles = sync.stageTrackedFiles;
-pub const generateAutoCommitMessage = sync.generateAutoCommitMessage;
-pub const commitCmd = sync.commitCmd;
-pub const pushCmd = sync.pushCmd;
+pub const pullCmd = pull.pullCmd;
 
-pub const pullCmd = sync.pullCmd;
+pub const switchCmd = branch.switchCmd;
+pub const branchesCmd = branch.branchesCmd;
 
-pub const switchCmd = sync.switchCmd;
-pub const branchesCmd = sync.branchesCmd;
+pub const restoreCmd = restore.restoreCmd;
+pub const discardCmd = restore.discardCmd;
 
-pub const restoreCmd = sync.restoreCmd;
-pub const discardCmd = sync.discardCmd;
 

@@ -1,7 +1,7 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const builtin = @import("builtin");
-const paths = @import("paths/mod.zig");
+const paths = @import("paths.zig");
 
 pub fn isTTY() bool {
     if (builtin.is_test) return false;

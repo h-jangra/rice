@@ -1,37 +1,35 @@
-pub const paths = @import("paths/mod.zig");
+pub const clean = @import("paths/clean.zig");
+pub const resolve = @import("paths/resolve.zig");
+pub const validate = @import("paths/validate.zig");
+pub const url = @import("paths/url.zig");
 
-pub const clean = paths.clean;
-pub const resolve = paths.resolve;
-pub const validate = paths.validate;
-pub const url = paths.url;
+pub const toSlashOwned = clean.toSlashOwned;
+pub const cleanPath = clean.cleanPath;
 
-pub const toSlashOwned = paths.toSlashOwned;
-pub const cleanPath = paths.cleanPath;
+pub const setProcessIo = resolve.setProcessIo;
+pub const setProcessEnviron = resolve.setProcessEnviron;
+pub const getProcessIo = resolve.getProcessIo;
+pub const getProcessEnviron = resolve.getProcessEnviron;
+pub const getHomeDir = resolve.getHomeDir;
+pub const getRiceDir = resolve.getRiceDir;
+pub const getRiceIniPath = resolve.getRiceIniPath;
+pub const resolveUserPath = resolve.resolveUserPath;
+pub const ResolvedPaths = resolve.ResolvedPaths;
+pub const resolvePath = resolve.resolvePath;
+pub const configPath = resolve.configPath;
+pub const absolutePath = resolve.absolutePath;
+pub const gitPath = resolve.gitPath;
+pub const InstallDestResult = resolve.InstallDestResult;
+pub const resolveInstallDestination = resolve.resolveInstallDestination;
 
-pub const setProcessIo = paths.setProcessIo;
-pub const setProcessEnviron = paths.setProcessEnviron;
-pub const getProcessIo = paths.getProcessIo;
-pub const getProcessEnviron = paths.getProcessEnviron;
-pub const getHomeDir = paths.getHomeDir;
-pub const getRiceDir = paths.getRiceDir;
-pub const getRiceIniPath = paths.getRiceIniPath;
-pub const resolveUserPath = paths.resolveUserPath;
-pub const ResolvedPaths = paths.ResolvedPaths;
-pub const resolvePath = paths.resolvePath;
-pub const configPath = paths.configPath;
-pub const absolutePath = paths.absolutePath;
-pub const gitPath = paths.gitPath;
-pub const InstallDestResult = paths.InstallDestResult;
-pub const resolveInstallDestination = paths.resolveInstallDestination;
+pub const validateManagedPath = validate.validateManagedPath;
+pub const validateSourcePath = validate.validateSourcePath;
+pub const detectSensitiveFile = validate.detectSensitiveFile;
+pub const validateBinaryName = validate.validateBinaryName;
 
-pub const validateManagedPath = paths.validateManagedPath;
-pub const validateSourcePath = paths.validateSourcePath;
-pub const detectSensitiveFile = paths.detectSensitiveFile;
-pub const validateBinaryName = paths.validateBinaryName;
-
-pub const normalizeRepoURL = paths.normalizeRepoURL;
-pub const isURL = paths.isURL;
-pub const GitHubURLType = paths.GitHubURLType;
-pub const GitHubURLInfo = paths.GitHubURLInfo;
-pub const parseGitHubURL = paths.parseGitHubURL;
+pub const normalizeRepoURL = url.normalizeRepoURL;
+pub const isURL = url.isURL;
+pub const GitHubURLType = url.GitHubURLType;
+pub const GitHubURLInfo = url.GitHubURLInfo;
+pub const parseGitHubURL = url.parseGitHubURL;
 

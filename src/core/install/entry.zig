@@ -1,6 +1,6 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
-const git_mod = @import("../git/mod.zig");
+const git_mod = @import("../git.zig");
 const sparse = @import("sparse.zig");
 const bin_cmd = @import("bin_cmd.zig");
 

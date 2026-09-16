@@ -3,12 +3,12 @@ const Allocator = std.mem.Allocator;
 const exec = @import("exec.zig");
 
 pub fn getCurrentBranch(allocator: Allocator, rice_dir: []const u8, home_dir: []const u8) ![]u8 {
-    if (exec.execOutput(allocator, rice_dir, home_dir, &.{ "symbolic-ref", "--short", "HEAD" }, true)) |out| {
+    if (exec.execOutput(allocator, rice_dir, home_dir, &.{ "symbolic-ref", "--short", "HEAD" }, false)) |out| {
         if (out.len > 0) return out;
         allocator.free(out);
     } else |_| {}
 
-    return exec.execOutput(allocator, rice_dir, home_dir, &.{ "rev-parse", "--abbrev-ref", "HEAD" }, true);
+    return exec.execOutput(allocator, rice_dir, home_dir, &.{ "rev-parse", "--abbrev-ref", "HEAD" }, false);
 }
 
 fn refExists(allocator: Allocator, rice_dir: []const u8, home_dir: []const u8, ref: []const u8) bool {
@@ -72,6 +72,25 @@ pub fn branchList(allocator: Allocator, rice_dir: []const u8, home_dir: []const 
     defer cmd_list.deinit(allocator);
     try cmd_list.append(allocator, "branch");
     try cmd_list.appendSlice(allocator, args);
-    return exec.execOutput(allocator, rice_dir, home_dir, cmd_list.items, true);
+    const out = try exec.execOutput(allocator, rice_dir, home_dir, cmd_list.items, false);
+
+    if (std.mem.indexOf(u8, out, "* ") != null) {
+        return out;
+    }
+
+    if (getCurrentBranch(allocator, rice_dir, home_dir)) |b| {
+        defer allocator.free(b);
+        if (b.len > 0) {
+            if (out.len > 0) {
+                defer allocator.free(out);
+                return std.fmt.allocPrint(allocator, "* {s}\n{s}", .{ b, out });
+            } else {
+                allocator.free(out);
+                return std.fmt.allocPrint(allocator, "* {s}\n", .{b});
+            }
+        }
+    } else |_| {}
+
+    return out;
 }
 

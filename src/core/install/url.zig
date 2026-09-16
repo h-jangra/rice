@@ -1,10 +1,10 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const builtin = @import("builtin");
-const paths = @import("../paths/mod.zig");
+const paths = @import("../paths.zig");
 const fs = @import("../fs.zig");
 const ui = @import("../ui.zig");
-const bin_mod = @import("../bin/mod.zig");
+const bin_mod = @import("../bin.zig");
 
 pub fn runDirectURLInstall(allocator: Allocator, homeDir: []const u8, rawURL: []const u8, rawDest: []const u8, contentsFlag: bool, forceFlag: bool) !void {
     const tmp_dir_path = try std.fmt.allocPrint(allocator, "/tmp/rice-dl-{d}", .{fs.getMilliTimestamp()});

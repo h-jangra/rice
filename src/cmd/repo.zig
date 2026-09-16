@@ -1,16 +1,16 @@
-pub const repo = @import("repo/mod.zig");
+pub const init_mod = @import("repo/init.zig");
+pub const tracking = @import("repo/tracking.zig");
+pub const diagnostics = @import("repo/diagnostics.zig");
 
-pub const init_mod = repo.init_mod;
-pub const tracking = repo.tracking;
-pub const diagnostics = repo.diagnostics;
+pub const loadConfigOrExit = tracking.loadConfigOrExit;
+pub const loadConfigOrDefault = tracking.loadConfigOrDefault;
+pub const initCmd = init_mod.initCmd;
+pub const addCmd = tracking.addCmd;
+pub const removeCmd = tracking.removeCmd;
+pub const listCmd = tracking.listCmd;
+pub const statusCmd = tracking.statusCmd;
+pub const diffCmd = tracking.diffCmd;
+pub const editCmd = diagnostics.editCmd;
+pub const doctorCmd = diagnostics.doctorCmd;
 
-pub const loadConfigOrExit = repo.loadConfigOrExit;
-pub const initCmd = repo.initCmd;
-pub const addCmd = repo.addCmd;
-pub const removeCmd = repo.removeCmd;
-pub const listCmd = repo.listCmd;
-pub const statusCmd = repo.statusCmd;
-pub const diffCmd = repo.diffCmd;
-pub const editCmd = repo.editCmd;
-pub const doctorCmd = repo.doctorCmd;
 

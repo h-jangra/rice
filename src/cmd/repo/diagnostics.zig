@@ -1,7 +1,7 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
-const git_mod = @import("../../core/git/mod.zig");
-const paths = @import("../../core/paths/mod.zig");
+const git_mod = @import("../../core/git.zig");
+const paths = @import("../../core/paths.zig");
 const config = @import("../../core/config.zig");
 const fs = @import("../../core/fs.zig");
 
@@ -21,8 +21,10 @@ pub fn editCmd(allocator: Allocator, homeDir: []const u8, args: []const []const 
     } else |_| {}
 
     if (!exists) {
-        std.debug.print("Error: ~/.rice.ini not found. Run 'rice init <remote>' first.\n", .{});
-        return error.FileNotFound;
+        var default_cfg = config.Config.init(allocator);
+        defer default_cfg.deinit();
+        try config.saveConfig(allocator, ini_path, &default_cfg);
+        std.debug.print("Created {s}.\n", .{ini_path});
     }
 
     var editor_str: []const u8 = "vi";
@@ -120,11 +122,11 @@ pub fn doctorCmd(allocator: Allocator, git: *git_mod.Git, homeDir: []const u8) !
         std.debug.print("[✓] Configuration file exists and is valid ({s})\n", .{ini_path});
     } else |err| {
         if (err == error.FileNotFound) {
-            std.debug.print("[✗] Configuration file (~/.rice.ini) does not exist\n", .{});
+            std.debug.print("[-] Configuration file (~/.rice.ini) not present (optional)\n", .{});
         } else {
             std.debug.print("[✗] Configuration file (~/.rice.ini) has invalid format: {s}\n", .{@errorName(err)});
+            issues += 1;
         }
-        issues += 1;
     }
     defer {
         if (cfg_opt) |c| {

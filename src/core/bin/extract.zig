@@ -1,7 +1,7 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const fs = @import("../fs.zig");
-const paths = @import("../paths/mod.zig");
+const paths = @import("../paths.zig");
 
 pub fn isExecutableBinary(data: []const u8) bool {
     if (data.len >= 4 and std.mem.eql(u8, data[0..4], "\x7fELF")) return true;

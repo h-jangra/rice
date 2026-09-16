@@ -1,25 +1,23 @@
-pub const bin = @import("bin/mod.zig");
+pub const source = @import("bin/source.zig");
+pub const release = @import("bin/release.zig");
+pub const extract = @import("bin/extract.zig");
+pub const install = @import("bin/install.zig");
 
-pub const source = bin.source;
-pub const release = bin.release;
-pub const extract = bin.extract;
-pub const install = bin.install;
+pub const BinarySourceType = source.BinarySourceType;
+pub const BinarySource = source.BinarySource;
+pub const parseBinarySource = source.parseBinarySource;
 
-pub const BinarySourceType = bin.BinarySourceType;
-pub const BinarySource = bin.BinarySource;
-pub const parseBinarySource = bin.parseBinarySource;
+pub const matchAsset = release.matchAsset;
+pub const GitHubReleaseAsset = release.GitHubReleaseAsset;
+pub const fetchGitHubReleaseAsset = release.fetchGitHubReleaseAsset;
 
-pub const matchAsset = bin.matchAsset;
-pub const GitHubReleaseAsset = bin.GitHubReleaseAsset;
-pub const fetchGitHubReleaseAsset = bin.fetchGitHubReleaseAsset;
+pub const isExecutableBinary = extract.isExecutableBinary;
+pub const isIgnoredCandidate = extract.isIgnoredCandidate;
+pub const matchCandidateName = extract.matchCandidateName;
+pub const findExecutable = extract.findExecutable;
+pub const formatBinaryTree = extract.formatBinaryTree;
+pub const promptBinarySelection = extract.promptBinarySelection;
 
-pub const isExecutableBinary = bin.isExecutableBinary;
-pub const isIgnoredCandidate = bin.isIgnoredCandidate;
-pub const matchCandidateName = bin.matchCandidateName;
-pub const findExecutable = bin.findExecutable;
-pub const formatBinaryTree = bin.formatBinaryTree;
-pub const promptBinarySelection = bin.promptBinarySelection;
-
-pub const InstallBinOptions = bin.InstallBinOptions;
-pub const installBinary = bin.installBinary;
+pub const InstallBinOptions = install.InstallBinOptions;
+pub const installBinary = install.installBinary;
 

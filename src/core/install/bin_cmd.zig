@@ -1,9 +1,9 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const builtin = @import("builtin");
-const paths = @import("../paths/mod.zig");
+const paths = @import("../paths.zig");
 const config = @import("../config.zig");
-const bin_mod = @import("../bin/mod.zig");
+const bin_mod = @import("../bin.zig");
 const sparse = @import("sparse.zig");
 const fs = @import("../fs.zig");
 

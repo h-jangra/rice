@@ -1,7 +1,7 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const config = @import("../config.zig");
-const paths = @import("../paths/mod.zig");
+const paths = @import("../paths.zig");
 
 pub fn runGitInDir(allocator: Allocator, dir: []const u8, args: []const []const u8) ![]u8 {
     return runGitInDirQuiet(allocator, dir, args, false);

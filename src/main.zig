@@ -56,10 +56,11 @@ const command_help_map = std.StaticStringMap([]const u8).initComptime(.{
     },
     .{
         "status",
-        \\Usage: rice status
+        \\Usage: rice status [-a|--all] [path]
         \\Aliases: rice st
         \\
-        \\Show Git status restricted to tracked paths in ~/.rice.ini.
+        \\Show Git status for managed paths.
+        \\By default, only staged changes are shown. Pass -a or git parameters to show all.
     },
     .{
         "diff",
@@ -292,7 +293,7 @@ pub fn printDetailedHelp() void {
         \\  add, a <path>...       Track and stage file(s) or director(ies) in ~/.rice.ini
         \\  remove, rm <path>      Untrack a path (preserves working tree file on disk)
         \\  list, ls               List all managed paths recorded in ~/.rice.ini
-        \\  status, st             Show Git status restricted to managed paths
+        \\  status, st [-a]        Show Git status (staged changes by default, -a for all)
         \\  diff, d [path]         Show changes in managed files (or a specific path)
         \\
         \\Branch & Sync Commands:
@@ -456,7 +457,7 @@ pub fn main(init: std.process.Init) !void {
     } else if (std.mem.eql(u8, resolved_cmd, "list")) {
         cmd_repo.listCmd(allocator, home_dir) catch std.process.exit(1);
     } else if (std.mem.eql(u8, resolved_cmd, "status")) {
-        cmd_repo.statusCmd(allocator, git, home_dir) catch std.process.exit(1);
+        cmd_repo.statusCmd(allocator, git, home_dir, cmd_args) catch std.process.exit(1);
     } else if (std.mem.eql(u8, resolved_cmd, "diff")) {
         cmd_repo.diffCmd(allocator, git, home_dir, cmd_args) catch std.process.exit(1);
     } else if (std.mem.eql(u8, resolved_cmd, "commit")) {

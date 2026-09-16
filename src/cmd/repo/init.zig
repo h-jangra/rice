@@ -1,8 +1,8 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const builtin = @import("builtin");
-const git_mod = @import("../../core/git/mod.zig");
-const paths = @import("../../core/paths/mod.zig");
+const git_mod = @import("../../core/git.zig");
+const paths = @import("../../core/paths.zig");
 const config = @import("../../core/config.zig");
 const fs = @import("../../core/fs.zig");
 const discovery = @import("../../core/install/discovery.zig");
@@ -94,23 +94,29 @@ pub fn initCmd(allocator: Allocator, git: *git_mod.Git, homeDir: []const u8, arg
 
         branch_name = detectRemoteBranch(allocator, nurl) catch try allocator.dupe(u8, defaultBranch());
 
-        _ = git.bareRun(&.{ "fetch", "--depth=1", "origin", branch_name.? }) catch {};
+        _ = git.bareRun(&.{ "fetch", "origin" }) catch {
+            _ = git.bareRun(&.{ "fetch", "--depth=1", "origin", branch_name.? }) catch {};
+        };
 
-        if (git.output(&.{ "rev-parse", "FETCH_HEAD" })) |fetch_head| {
-            defer allocator.free(fetch_head);
+        const bname = branch_name.?;
+        const remote_ref = try std.fmt.allocPrint(allocator, "refs/remotes/origin/{s}", .{bname});
+        defer allocator.free(remote_ref);
 
-            const bname = branch_name.?;
+        const head_hash = git.output(&.{ "rev-parse", remote_ref }) catch git.output(&.{ "rev-parse", "FETCH_HEAD" }) catch null;
+        if (head_hash) |hash| {
+            defer allocator.free(hash);
+
             const sym_ref = try std.fmt.allocPrint(allocator, "refs/heads/{s}", .{bname});
             defer allocator.free(sym_ref);
 
             _ = git.bareRun(&.{ "symbolic-ref", "HEAD", sym_ref }) catch {};
-            _ = git.bareRun(&.{ "update-ref", sym_ref, "FETCH_HEAD" }) catch {};
+            _ = git.bareRun(&.{ "update-ref", sym_ref, hash }) catch {};
             const upstream_arg = try std.fmt.allocPrint(allocator, "--set-upstream-to=origin/{s}", .{bname});
             defer allocator.free(upstream_arg);
             _ = git.bareRun(&.{ "branch", upstream_arg, bname }) catch {};
             _ = git.bareRun(&.{ "read-tree", "HEAD" }) catch {};
 
-            if (git.getRefFileContent("FETCH_HEAD", ".rice.ini")) |remote_ini_bytes| {
+            if (git.getRefFileContent(hash, ".rice.ini")) |remote_ini_bytes| {
                 defer allocator.free(remote_ini_bytes);
                 if (fs.createFileAbsolute(ini_path, .{ .permissions = @enumFromInt(0o644) })) |f| {
                     var file = f;
@@ -118,14 +124,10 @@ pub fn initCmd(allocator: Allocator, git: *git_mod.Git, homeDir: []const u8, arg
                     file.close(paths.getProcessIo());
                 } else |_| {}
             } else |_| {}
-        } else |_| {}
+        }
     }
 
-    var cfg = config.loadConfig(allocator, ini_path) catch blk: {
-        const new_c = try allocator.create(config.Config);
-        new_c.* = config.Config.init(allocator);
-        break :blk new_c;
-    };
+    var cfg = try config.loadConfigOrDefault(allocator, ini_path);
     defer {
         cfg.deinit();
         allocator.destroy(cfg);

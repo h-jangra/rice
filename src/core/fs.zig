@@ -1,7 +1,7 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const builtin = @import("builtin");
-const paths = @import("paths/mod.zig");
+const paths = @import("paths.zig");
 
 pub fn downloadWithCurl(allocator: Allocator, url: []const u8, destPath: []const u8) !void {
     const res = std.process.run(allocator, paths.getProcessIo(), .{

@@ -1,11 +1,11 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
-const git_mod = @import("../../core/git/mod.zig");
-const paths = @import("../../core/paths/mod.zig");
+const git_mod = @import("../../core/git.zig");
+const paths = @import("../../core/paths.zig");
 const config = @import("../../core/config.zig");
 const fs = @import("../../core/fs.zig");
-const bin_mod = @import("../../core/bin/mod.zig");
-const repo = @import("../repo/mod.zig");
+const bin_mod = @import("../../core/bin.zig");
+const repo = @import("../repo.zig");
 
 pub fn restoreCmd(allocator: Allocator, git: *git_mod.Git, homeDir: []const u8, args: []const []const u8) !void {
     if (args.len > 0 and (std.mem.eql(u8, args[0], "--bins") or std.mem.eql(u8, args[0], "-b") or std.mem.eql(u8, args[0], "--bin"))) {
@@ -83,33 +83,19 @@ pub fn restoreCmd(allocator: Allocator, git: *git_mod.Git, homeDir: []const u8, 
     if (!ini_exists) {
         if (git.getHEADFileContent(".rice.ini")) |ini_bytes| {
             defer allocator.free(ini_bytes);
-            const file = try fs.createFileAbsolute(ini_path, .{ .permissions = @enumFromInt(0o644) });
-            try file.writePositionalAll(paths.getProcessIo(), ini_bytes, 0);
-            file.close(paths.getProcessIo());
-            std.debug.print("Restored {s} from repository HEAD.\n", .{ini_path});
-        } else |_| {
-            var cfg = try allocator.create(config.Config);
-            cfg.* = config.Config.init(allocator);
-            defer {
-                cfg.deinit();
-                allocator.destroy(cfg);
-            }
-            if (git.getRemote()) |r| cfg.remote = r else |_| {}
-            if (git.getCurrentBranch()) |b| cfg.branch = b else |_| {}
-            try config.saveConfig(allocator, ini_path, cfg);
-            std.debug.print("Created {s}.\n", .{ini_path});
-        }
+            if (fs.createFileAbsolute(ini_path, .{ .permissions = @enumFromInt(0o644) })) |file| {
+                defer file.close(paths.getProcessIo());
+                file.writePositionalAll(paths.getProcessIo(), ini_bytes, 0) catch {};
+                std.debug.print("Restored {s} from repository HEAD.\n", .{ini_path});
+                ini_exists = true;
+            } else |_| {}
+        } else |_| {}
     }
 
-    var cfg = try config.loadConfig(allocator, ini_path);
+    var cfg = try config.loadConfigOrDefault(allocator, ini_path);
     defer {
         cfg.deinit();
         allocator.destroy(cfg);
-    }
-
-    if (cfg.files.items.len == 0) {
-        std.debug.print("No managed files listed in ~/.rice.ini to restore.\n", .{});
-        return;
     }
 
     var git_paths: std.ArrayList([]const u8) = .empty;
@@ -124,14 +110,18 @@ pub fn restoreCmd(allocator: Allocator, git: *git_mod.Git, homeDir: []const u8, 
         } else |_| {}
     }
 
-    var tracked_files = try git.listTrackedFiles(git_paths.items);
+    var tracked_files = if (git_paths.items.len > 0)
+        try git.listTrackedFiles(git_paths.items)
+    else
+        try git.listRefFiles("HEAD", &.{});
+
     defer {
         for (tracked_files.items) |tf| allocator.free(tf);
         tracked_files.deinit(allocator);
     }
 
     if (tracked_files.items.len == 0) {
-        std.debug.print("No matching files found in repository HEAD for managed paths.\n", .{});
+        std.debug.print("No matching files found in repository HEAD to restore.\n", .{});
         return;
     }
 
@@ -178,12 +168,19 @@ pub fn restoreCmd(allocator: Allocator, git: *git_mod.Git, homeDir: []const u8, 
 
     var checkout_args: std.ArrayList([]const u8) = .empty;
     defer checkout_args.deinit(allocator);
-    try checkout_args.append(allocator, ".rice.ini");
-    for (git_paths.items) |gp| try checkout_args.append(allocator, gp);
+    if (ini_exists) {
+        try checkout_args.append(allocator, ".rice.ini");
+    }
+    if (git_paths.items.len > 0) {
+        for (git_paths.items) |gp| try checkout_args.append(allocator, gp);
+    } else {
+        for (tracked_files.items) |tf| try checkout_args.append(allocator, tf);
+    }
 
     try git.checkoutHEAD(checkout_args.items);
 
-    std.debug.print("Successfully restored {d} managed path(s) from repository.\n", .{cfg.files.items.len});
+    const restored_count = if (cfg.files.items.len > 0) cfg.files.items.len else tracked_files.items.len;
+    std.debug.print("Successfully restored {d} managed path(s) from repository.\n", .{restored_count});
 }
 
 pub fn discardCmd(allocator: Allocator, git: *git_mod.Git, homeDir: []const u8, args: []const []const u8) !void {
@@ -222,11 +219,34 @@ pub fn discardCmd(allocator: Allocator, git: *git_mod.Git, homeDir: []const u8, 
     }
 
     if (path_args.items.len == 0) {
-        try target_git_paths.append(allocator, try allocator.dupe(u8, ".rice.ini"));
-        for (cfg.files.items) |f| {
-            if (paths.gitPath(allocator, homeDir, f)) |gp| {
-                try target_git_paths.append(allocator, gp);
-            } else |_| {}
+        const ini_path = try paths.getRiceIniPath(allocator, homeDir);
+        defer allocator.free(ini_path);
+        var ini_exists = false;
+        if (fs.openFileAbsolute(ini_path, .{})) |f| {
+            f.close(paths.getProcessIo());
+            ini_exists = true;
+        } else |_| {}
+
+        if (ini_exists) {
+            try target_git_paths.append(allocator, try allocator.dupe(u8, ".rice.ini"));
+        }
+        if (cfg.files.items.len > 0) {
+            for (cfg.files.items) |f| {
+                if (paths.gitPath(allocator, homeDir, f)) |gp| {
+                    try target_git_paths.append(allocator, gp);
+                } else |_| {}
+            }
+        } else {
+            var all_tracked = try git.getAllGitTrackedFiles();
+            defer {
+                for (all_tracked.items) |f| allocator.free(f);
+                all_tracked.deinit(allocator);
+            }
+            for (all_tracked.items) |f| {
+                if (!std.mem.eql(u8, f, ".rice.ini")) {
+                    try target_git_paths.append(allocator, try allocator.dupe(u8, f));
+                }
+            }
         }
     } else {
         for (path_args.items) |arg| {

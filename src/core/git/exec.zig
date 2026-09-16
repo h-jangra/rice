@@ -1,6 +1,6 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
-const paths = @import("../paths/mod.zig");
+const paths = @import("../paths.zig");
 
 pub fn makeCmdArgs(allocator: Allocator, rice_dir: []const u8, home_dir: []const u8, args: []const []const u8, with_work_tree: bool) !std.ArrayList([]const u8) {
     var list: std.ArrayList([]const u8) = .empty;
@@ -32,7 +32,7 @@ fn createGitEnv(allocator: Allocator) !std.process.Environ.Map {
     return env_map;
 }
 
-pub fn execRun(allocator: Allocator, rice_dir: []const u8, home_dir: []const u8, args: []const []const u8, with_work_tree: bool) !void {
+pub fn execRunEx(allocator: Allocator, rice_dir: []const u8, home_dir: []const u8, args: []const []const u8, with_work_tree: bool, quiet: bool) !void {
     var cmd_list = try makeCmdArgs(allocator, rice_dir, home_dir, args, with_work_tree);
     defer freeCmdArgs(allocator, &cmd_list, with_work_tree);
 
@@ -47,7 +47,7 @@ pub fn execRun(allocator: Allocator, rice_dir: []const u8, home_dir: []const u8,
     defer allocator.free(res.stdout);
     defer allocator.free(res.stderr);
 
-    if (res.stdout.len > 0) {
+    if (!quiet and res.stdout.len > 0) {
         std.debug.print("{s}", .{res.stdout});
     }
 
@@ -58,6 +58,13 @@ pub fn execRun(allocator: Allocator, rice_dir: []const u8, home_dir: []const u8,
     if (res.term != .exited or res.term.exited != 0) return error.GitCommandFailed;
 }
 
+pub fn execRun(allocator: Allocator, rice_dir: []const u8, home_dir: []const u8, args: []const []const u8, with_work_tree: bool) !void {
+    return execRunEx(allocator, rice_dir, home_dir, args, with_work_tree, false);
+}
+
+pub fn execRunQuiet(allocator: Allocator, rice_dir: []const u8, home_dir: []const u8, args: []const []const u8, with_work_tree: bool) !void {
+    return execRunEx(allocator, rice_dir, home_dir, args, with_work_tree, true);
+}
 
 pub fn execOutputBytes(allocator: Allocator, rice_dir: []const u8, home_dir: []const u8, args: []const []const u8, with_work_tree: bool) ![]u8 {
     var cmd_list = try makeCmdArgs(allocator, rice_dir, home_dir, args, with_work_tree);
@@ -83,12 +90,12 @@ pub fn execOutputBytes(allocator: Allocator, rice_dir: []const u8, home_dir: []c
 pub fn execOutput(allocator: Allocator, rice_dir: []const u8, home_dir: []const u8, args: []const []const u8, with_work_tree: bool) ![]u8 {
     const stdout = try execOutputBytes(allocator, rice_dir, home_dir, args, with_work_tree);
     defer allocator.free(stdout);
-    return allocator.dupe(u8, std.mem.trim(u8, stdout, " \t\r\n"));
+    return allocator.dupe(u8, std.mem.trimEnd(u8, stdout, " \t\r\n"));
 }
 
 pub fn verifyGitInstalled(allocator: Allocator) ![]u8 {
     const res = std.process.run(allocator, paths.getProcessIo(), .{
-        .argv = &.{ "which", "git" },
+        .argv = &.{ "git", "--version" },
     }) catch return error.GitNotFound;
     defer {
         allocator.free(res.stdout);

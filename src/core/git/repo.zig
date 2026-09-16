@@ -1,6 +1,6 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
-const paths = @import("../paths/mod.zig");
+const paths = @import("../paths.zig");
 const exec = @import("exec.zig");
 const git_status = @import("status.zig");
 const branch = @import("branch.zig");
@@ -30,6 +30,10 @@ pub const Git = struct {
         return exec.execRun(self.allocator, self.rice_dir, self.home_dir, args, true);
     }
 
+    pub fn runQuiet(self: *const Git, args: []const []const u8) !void {
+        return exec.execRunQuiet(self.allocator, self.rice_dir, self.home_dir, args, true);
+    }
+
     pub fn output(self: *const Git, args: []const []const u8) ![]u8 {
         return exec.execOutput(self.allocator, self.rice_dir, self.home_dir, args, true);
     }
@@ -40,6 +44,10 @@ pub const Git = struct {
 
     pub fn bareRun(self: *const Git, args: []const []const u8) !void {
         return exec.execRun(self.allocator, self.rice_dir, self.home_dir, args, false);
+    }
+
+    pub fn bareRunQuiet(self: *const Git, args: []const []const u8) !void {
+        return exec.execRunQuiet(self.allocator, self.rice_dir, self.home_dir, args, false);
     }
 
     pub fn bareOutput(self: *const Git, args: []const []const u8) ![]u8 {
@@ -107,10 +115,11 @@ pub const Git = struct {
 
         if (self.output(&.{ "remote", "get-url", "origin" })) |out| {
             self.allocator.free(out);
-            return self.run(&.{ "remote", "set-url", "origin", norm });
+            try self.run(&.{ "remote", "set-url", "origin", norm });
         } else |_| {
-            return self.run(&.{ "remote", "add", "origin", norm });
+            try self.run(&.{ "remote", "add", "origin", norm });
         }
+        _ = self.run(&.{ "config", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*" }) catch {};
     }
 
     pub fn getRemote(self: *const Git) ![]u8 {
@@ -130,23 +139,23 @@ pub const Git = struct {
     }
 
     pub fn commit(self: *const Git, msg: []const u8) !void {
-        try self.run(&.{ "commit", "-m", msg });
+        try self.runQuiet(&.{ "commit", "-m", msg });
     }
 
     pub fn push(self: *const Git) !void {
         if (self.getCurrentBranch()) |cur_branch| {
             defer self.allocator.free(cur_branch);
             if (cur_branch.len > 0 and !std.mem.eql(u8, cur_branch, "HEAD")) {
-                if (self.run(&.{ "push", "-u", "origin", cur_branch })) {
+                if (self.runQuiet(&.{ "push", "-u", "origin", cur_branch })) {
                     return;
                 } else |_| {}
             }
         } else |_| {}
 
-        if (self.run(&.{ "push", "origin", "HEAD" })) {
+        if (self.runQuiet(&.{ "push", "origin", "HEAD" })) {
             return;
         } else |_| {
-            return self.run(&.{"push"});
+            return self.runQuiet(&.{"push"});
         }
     }
 

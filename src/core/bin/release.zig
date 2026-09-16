@@ -1,6 +1,6 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
-const paths = @import("../paths/mod.zig");
+const paths = @import("../paths.zig");
 
 pub fn matchAsset(name: []const u8, target_os: []const u8, target_arch: []const u8) bool {
     var lower_buf: [256]u8 = undefined;

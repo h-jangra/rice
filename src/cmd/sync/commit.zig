@@ -1,9 +1,8 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
-const git_mod = @import("../../core/git/mod.zig");
-const paths = @import("../../core/paths/mod.zig");
+const git_mod = @import("../../core/git.zig");
+const paths = @import("../../core/paths.zig");
 const config = @import("../../core/config.zig");
-const repo = @import("../repo/mod.zig");
 const fs = @import("../../core/fs.zig");
 
 pub fn parseCommitMessage(allocator: Allocator, args: []const []const u8) !?[]u8 {
@@ -184,13 +183,18 @@ pub fn commitCmd(allocator: Allocator, git: *git_mod.Git, homeDir: []const u8, a
     };
     defer if (msg_opt) |m| allocator.free(m);
 
-    var cfg = try repo.loadConfigOrExit(allocator, homeDir);
-    defer {
-        cfg.deinit();
-        allocator.destroy(cfg);
-    }
+    const ini_path = try paths.getRiceIniPath(allocator, homeDir);
+    defer allocator.free(ini_path);
 
-    _ = git.add(&.{".rice.ini"}) catch {};
+    const cfg = config.loadConfigOrDefault(allocator, ini_path) catch null;
+    defer if (cfg) |c| {
+        c.deinit();
+        allocator.destroy(c);
+    };
+
+    if (fs.isFileAbsolute(ini_path)) {
+        _ = git.add(&.{".rice.ini"}) catch {};
+    }
 
     const diff = git.output(&.{ "diff", "--cached", "--name-only" }) catch return error.GitDiffFailed;
     defer allocator.free(diff);
@@ -211,6 +215,8 @@ pub fn commitCmd(allocator: Allocator, git: *git_mod.Git, homeDir: []const u8, a
     defer if (allocated_cmsg) allocator.free(commit_msg);
 
     try git.commit(commit_msg);
+
+    std.debug.print("  ✓ Committed changes\n    {s}\n", .{commit_msg});
 }
 
 pub fn pushCmd(allocator: Allocator, git: *git_mod.Git, homeDir: []const u8, args: []const []const u8) !void {
@@ -228,7 +234,7 @@ pub fn pushCmd(allocator: Allocator, git: *git_mod.Git, homeDir: []const u8, arg
     const ini_path = try paths.getRiceIniPath(allocator, homeDir);
     defer allocator.free(ini_path);
 
-    const cfg = config.loadConfig(allocator, ini_path) catch null;
+    const cfg = config.loadConfigOrDefault(allocator, ini_path) catch null;
     defer {
         if (cfg) |c| {
             c.deinit();
@@ -236,7 +242,9 @@ pub fn pushCmd(allocator: Allocator, git: *git_mod.Git, homeDir: []const u8, arg
         }
     }
 
-    _ = git.add(&.{".rice.ini"}) catch {};
+    if (fs.isFileAbsolute(ini_path)) {
+        _ = git.add(&.{".rice.ini"}) catch {};
+    }
 
     const staged_diff = git.output(&.{ "diff", "--cached", "--name-status" }) catch null;
     defer if (staged_diff) |sd| allocator.free(sd);
@@ -277,36 +285,7 @@ pub fn pushCmd(allocator: Allocator, git: *git_mod.Git, homeDir: []const u8, arg
         return;
     }
 
-    std.debug.print("Changes to be pushed:\n", .{});
-
     if (has_staged) {
-        std.debug.print("  Uncommitted changes:\n", .{});
-        var lines = std.mem.splitScalar(u8, staged_diff.?, '\n');
-        while (lines.next()) |line| {
-            const trimmed = std.mem.trim(u8, line, " \t\r");
-            if (trimmed.len == 0) continue;
-            std.debug.print("    {s}\n", .{trimmed});
-        }
-    }
-
-    if (has_unpushed) {
-        std.debug.print("  Unpushed commit(s):\n", .{});
-        var lines = std.mem.splitScalar(u8, unpushed_commits.?, '\n');
-        while (lines.next()) |line| {
-            const trimmed = std.mem.trim(u8, line, " \t\r");
-            if (trimmed.len == 0) continue;
-            std.debug.print("    {s}\n", .{trimmed});
-        }
-    }
-
-    std.debug.print("\n", .{});
-
-    if (!fs.promptConfirm("Proceed with push? [y/N]: ")) {
-        std.debug.print("Push cancelled.\n", .{});
-        return;
-    }
-
-    if (has_staged and cfg != null) {
         if (msg_opt) |custom_msg| {
             _ = git.commit(custom_msg) catch {};
         } else if (generateAutoCommitMessage(allocator, git, homeDir, cfg)) |auto_msg| {
@@ -315,13 +294,11 @@ pub fn pushCmd(allocator: Allocator, git: *git_mod.Git, homeDir: []const u8, arg
         } else |_| {}
     }
 
-    try git.push();
-
-    if (git.hasCommits()) {
-        if (git.output(&.{ "log", "-1", "--format=%s" })) |cmsg| {
-            defer allocator.free(cmsg);
-            if (cmsg.len > 0) std.debug.print("Pushed: {s}\n", .{cmsg});
-        } else |_| {}
-    }
+    std.debug.print("  → Pushing changes...\n", .{});
+    git.push() catch |err| {
+        std.debug.print("Error: failed to push changes: {s}\n", .{@errorName(err)});
+        return err;
+    };
+    std.debug.print("  ✓ Push complete\n", .{});
 }
 

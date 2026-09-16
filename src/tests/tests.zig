@@ -745,3 +745,214 @@ test "sync: pull creates default .rice.ini if not in remote without tracking all
     try std.testing.expectEqual(@as(usize, 0), cfg.files.items.len);
 }
 
+test "sync: branch listing formatting and arguments" {
+    const allocator = std.testing.allocator;
+
+    const fake_home = try std.fmt.allocPrint(allocator, "/tmp/rice-test-home-branch-{d}", .{fs.getMilliTimestamp()});
+    defer allocator.free(fake_home);
+    try fs.makePath(fake_home);
+    defer fs.deleteTreeAbsolute(fake_home) catch {};
+
+    var git = try git_mod.Git.init(allocator, fake_home);
+    defer git.deinit();
+
+    try git.initBare();
+    try git.bareRun(&.{ "config", "user.name", "TestUser" });
+    try git.bareRun(&.{ "config", "user.email", "test@example.com" });
+
+    // Add a file and commit so HEAD is not unborn
+    const f_p = try std.fs.path.join(allocator, &.{ fake_home, ".zshrc" });
+    defer allocator.free(f_p);
+    const f = try fs.createFileAbsolute(f_p, .{});
+    try f.writePositionalAll(paths.getProcessIo(), "export FOO=1\n", 0);
+    f.close(paths.getProcessIo());
+
+    try git.add(&.{".zshrc"});
+    _ = try git.commit("initial commit");
+
+    // Create a new branch 'feature'
+    try git.switchBranch("feature", true, false, false);
+    // Switch back to main
+    try git.switchBranch("main", false, false, false);
+
+    // Test branch listing
+    const out = try git.branchList(&.{});
+    defer allocator.free(out);
+
+    // Current branch should be prefixed with '* ' and feature should have leading spaces '  feature'
+    try std.testing.expect(std.mem.indexOf(u8, out, "* main") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "  feature") != null);
+
+    // Test branch listing with -a
+    const out_all = try git.branchList(&.{"-a"});
+    defer allocator.free(out_all);
+    try std.testing.expect(std.mem.indexOf(u8, out_all, "* main") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out_all, "  feature") != null);
+}
+
+test "repo: commands work properly when .rice.ini is absent" {
+    const allocator = std.testing.allocator;
+    const cmd_sync = @import("../cmd/sync.zig");
+
+    const fake_home = try std.fmt.allocPrint(allocator, "/tmp/rice-test-home-noini-{d}", .{fs.getMilliTimestamp()});
+    defer allocator.free(fake_home);
+    try fs.makePath(fake_home);
+    defer fs.deleteTreeAbsolute(fake_home) catch {};
+
+    var git = try git_mod.Git.init(allocator, fake_home);
+    defer git.deinit();
+
+    try git.initBare();
+    try git.bareRun(&.{ "config", "user.name", "TestUser" });
+    try git.bareRun(&.{ "config", "user.email", "test@example.com" });
+
+    // Add a dotfile directly to bare repo
+    const f_p = try std.fs.path.join(allocator, &.{ fake_home, ".bashrc" });
+    defer allocator.free(f_p);
+    const f = try fs.createFileAbsolute(f_p, .{});
+    try f.writePositionalAll(paths.getProcessIo(), "alias ll='ls -l'\n", 0);
+    f.close(paths.getProcessIo());
+
+    try git.add(&.{".bashrc"});
+    _ = try git.commit("initial bashrc");
+
+    // Ensure .rice.ini does NOT exist
+    const ini_path = try paths.getRiceIniPath(allocator, fake_home);
+    defer allocator.free(ini_path);
+    try std.testing.expectError(error.FileNotFound, fs.openFileAbsolute(ini_path, .{}));
+
+    // 1. Status command works without .rice.ini
+    try cmd_repo.statusCmd(allocator, git, fake_home, &.{});
+
+    // 2. List command falls back to git-tracked files
+    try cmd_repo.listCmd(allocator, fake_home);
+
+    // 3. Diff command works without .rice.ini
+    try cmd_repo.diffCmd(allocator, git, fake_home, &.{});
+
+    // 4. Doctor command does not fail for missing optional .rice.ini
+    // Configure remote origin first so doctor doesn't fail on missing remote
+    try git.setRemote("https://github.com/example/dots.git");
+    try cmd_repo.doctorCmd(allocator, git, fake_home);
+
+    // 5. Restore command can restore tracked files when .rice.ini is absent
+    try fs.deleteFileAbsolute(f_p);
+    try cmd_sync.restoreCmd(allocator, git, fake_home, &.{});
+    // Verify .bashrc was restored!
+    const restored_f = try fs.openFileAbsolute(f_p, .{});
+    restored_f.close(paths.getProcessIo());
+}
+
+test "sync: branches -a fetches and displays all remote branches" {
+    const allocator = std.testing.allocator;
+    const cmd_sync = @import("../cmd/sync.zig");
+
+    // 1. Create a fake remote repo with multiple branches: main, dev, feature
+    const fake_remote = try std.fmt.allocPrint(allocator, "/tmp/rice-test-remote-branches-{d}", .{fs.getMilliTimestamp()});
+    defer allocator.free(fake_remote);
+    try fs.makePath(fake_remote);
+    defer fs.deleteTreeAbsolute(fake_remote) catch {};
+
+    try discovery.execGitInDir(allocator, fake_remote, &.{ "init", "-b", "main" });
+    try discovery.execGitInDir(allocator, fake_remote, &.{ "config", "user.name", "TestUser" });
+    try discovery.execGitInDir(allocator, fake_remote, &.{ "config", "user.email", "test@example.com" });
+
+    const f1 = try std.fs.path.join(allocator, &.{ fake_remote, "a.txt" });
+    defer allocator.free(f1);
+    const file1 = try fs.createFileAbsolute(f1, .{});
+    try file1.writePositionalAll(paths.getProcessIo(), "main content", 0);
+    file1.close(paths.getProcessIo());
+    try discovery.execGitInDir(allocator, fake_remote, &.{ "add", "a.txt" });
+    try discovery.execGitInDir(allocator, fake_remote, &.{ "commit", "-m", "main branch" });
+
+    try discovery.execGitInDir(allocator, fake_remote, &.{ "checkout", "-b", "dev" });
+    const f2 = try std.fs.path.join(allocator, &.{ fake_remote, "b.txt" });
+    defer allocator.free(f2);
+    const file2 = try fs.createFileAbsolute(f2, .{});
+    try file2.writePositionalAll(paths.getProcessIo(), "dev content", 0);
+    file2.close(paths.getProcessIo());
+    try discovery.execGitInDir(allocator, fake_remote, &.{ "add", "b.txt" });
+    try discovery.execGitInDir(allocator, fake_remote, &.{ "commit", "-m", "dev branch" });
+
+    try discovery.execGitInDir(allocator, fake_remote, &.{ "checkout", "-b", "feature" });
+    const f3 = try std.fs.path.join(allocator, &.{ fake_remote, "c.txt" });
+    defer allocator.free(f3);
+    const file3 = try fs.createFileAbsolute(f3, .{});
+    try file3.writePositionalAll(paths.getProcessIo(), "feature content", 0);
+    file3.close(paths.getProcessIo());
+    try discovery.execGitInDir(allocator, fake_remote, &.{ "add", "c.txt" });
+    try discovery.execGitInDir(allocator, fake_remote, &.{ "commit", "-m", "feature branch" });
+
+    // 2. Initialize local bare repo with remote
+    const fake_home = try std.fmt.allocPrint(allocator, "/tmp/rice-test-home-branches-{d}", .{fs.getMilliTimestamp()});
+    defer allocator.free(fake_home);
+    try fs.makePath(fake_home);
+    defer fs.deleteTreeAbsolute(fake_home) catch {};
+
+    var git = try git_mod.Git.init(allocator, fake_home);
+    defer git.deinit();
+
+    try cmd_repo.initCmd(allocator, git, fake_home, &.{fake_remote});
+
+    // 3. Test that rice branches -a lists ALL remote branches (main, dev, feature)
+    try cmd_sync.branchesCmd(allocator, git, &.{"-a"});
+
+    const out_all = try git.branchList(&.{"-a"});
+    defer allocator.free(out_all);
+
+    try std.testing.expect(std.mem.indexOf(u8, out_all, "remotes/origin/main") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out_all, "remotes/origin/dev") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out_all, "remotes/origin/feature") != null);
+}
+
+test "repo: status only shows staged by default and -a shows all" {
+    const allocator = std.testing.allocator;
+
+    const fake_home = try std.fmt.allocPrint(allocator, "/tmp/rice-test-home-status-{d}", .{fs.getMilliTimestamp()});
+    defer allocator.free(fake_home);
+    try fs.makePath(fake_home);
+    defer fs.deleteTreeAbsolute(fake_home) catch {};
+
+    var git = try git_mod.Git.init(allocator, fake_home);
+    defer git.deinit();
+
+    try git.initBare();
+    try git.bareRun(&.{ "config", "user.name", "TestUser" });
+    try git.bareRun(&.{ "config", "user.email", "test@example.com" });
+
+    // Create a tracked file in repo
+    const file_a = try std.fs.path.join(allocator, &.{ fake_home, ".config", "app.conf" });
+    defer allocator.free(file_a);
+    try fs.makePath(std.fs.path.dirname(file_a).?);
+    const fa = try fs.createFileAbsolute(file_a, .{});
+    try fa.writePositionalAll(paths.getProcessIo(), "version=1\n", 0);
+    fa.close(paths.getProcessIo());
+
+    try git.add(&.{".config/app.conf"});
+    _ = try git.commit("initial commit");
+
+    // Modify file_a without staging it (unstaged modified)
+    const fa_mod = try fs.createFileAbsolute(file_a, .{});
+    try fa_mod.writePositionalAll(paths.getProcessIo(), "version=2\n", 0);
+    fa_mod.close(paths.getProcessIo());
+
+    // Create file_b and stage it (staged added)
+    const file_b = try std.fs.path.join(allocator, &.{ fake_home, ".zshrc" });
+    defer allocator.free(file_b);
+    const fb = try fs.createFileAbsolute(file_b, .{});
+    try fb.writePositionalAll(paths.getProcessIo(), "export ZSH=1\n", 0);
+    fb.close(paths.getProcessIo());
+    try git.add(&.{".zshrc"});
+
+    // 1. Calling status without args should run cleanly (only showing staged .zshrc)
+    try cmd_repo.statusCmd(allocator, git, fake_home, &.{});
+
+    // 2. Calling status with -a should run cleanly (showing both staged .zshrc and modified app.conf)
+    try cmd_repo.statusCmd(allocator, git, fake_home, &.{"-a"});
+
+    // 3. Calling status with git params like -s or --all should run cleanly
+    try cmd_repo.statusCmd(allocator, git, fake_home, &.{"-s"});
+}
+
+
+

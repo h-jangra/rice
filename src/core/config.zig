@@ -1,6 +1,6 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
-const paths = @import("paths/mod.zig");
+const paths = @import("paths.zig");
 
 pub const Config = struct {
     allocator: Allocator,
@@ -216,6 +216,17 @@ pub fn loadConfig(allocator: Allocator, path: []const u8) !*Config {
     }
 
     return cfg;
+}
+
+pub fn loadConfigOrDefault(allocator: Allocator, path: []const u8) !*Config {
+    return loadConfig(allocator, path) catch |err| {
+        if (err == error.FileNotFound) {
+            const cfg = try allocator.create(Config);
+            cfg.* = Config.init(allocator);
+            return cfg;
+        }
+        return err;
+    };
 }
 
 pub fn saveConfig(allocator: Allocator, path: []const u8, cfg: *const Config) !void {

@@ -1020,7 +1020,7 @@ test "install: interactive manifest collection and validation with nested paths"
 
     var validated = try manifest.validateManifestPaths(allocator, read_lines.items, files.items, tmp_src);
     defer {
-        for (validated.items) |v| allocator.free(v);
+        for (validated.items) |v| v.deinit(allocator);
         validated.deinit(allocator);
     }
     try std.testing.expectEqual(@as(usize, 5), validated.items.len);
@@ -1057,13 +1057,13 @@ test "install: interactive manifest deletion of entries" {
 
     var validated = try manifest.validateManifestPaths(allocator, &remaining_from_user, &original_files, tmp_src);
     defer {
-        for (validated.items) |v| allocator.free(v);
+        for (validated.items) |v| v.deinit(allocator);
         validated.deinit(allocator);
     }
 
     try std.testing.expectEqual(@as(usize, 2), validated.items.len);
-    try std.testing.expectEqualStrings(".config/kitty/kitty.conf", validated.items[0]);
-    try std.testing.expectEqualStrings(".config/mango/config", validated.items[1]);
+    try std.testing.expectEqualStrings(".config/kitty/kitty.conf", validated.items[0].src_path);
+    try std.testing.expectEqualStrings(".config/mango/config", validated.items[1].src_path);
 
     const selected_count = validated.items.len;
     const discarded_count = original_files.len - selected_count;
@@ -1157,10 +1157,10 @@ test "install: interactive manifest preserves paths with spaces" {
 
     var validated = try manifest.validateManifestPaths(allocator, read_lines.items, collected.items, tmp_src);
     defer {
-        for (validated.items) |item| allocator.free(item);
+        for (validated.items) |item| item.deinit(allocator);
         validated.deinit(allocator);
     }
-    try std.testing.expectEqualStrings(space_rel, validated.items[0]);
+    try std.testing.expectEqualStrings(space_rel, validated.items[0].src_path);
 
     // Test installation
     const dst_file = try std.fs.path.join(allocator, &.{ tmp_dst, space_rel });
@@ -1248,4 +1248,205 @@ test "install: interactive workflow installs only remaining paths" {
     try std.testing.expect(fs.isFileAbsolute(dst1));
     try std.testing.expect(!fs.isFileAbsolute(dst2)); // Must NOT be installed!
     try std.testing.expect(fs.isFileAbsolute(dst3));
+}
+
+test "install: interactive install with dot destination installs to cwd not home" {
+    const allocator = std.testing.allocator;
+
+    const tmp_test_dir = try std.fmt.allocPrint(allocator, "/tmp/rice-test-dot-dst-{d}", .{fs.getMilliTimestamp()});
+    defer allocator.free(tmp_test_dir);
+    try fs.makePath(tmp_test_dir);
+    defer fs.deleteTreeAbsolute(tmp_test_dir) catch {};
+
+    const fake_home = try std.fs.path.join(allocator, &.{ tmp_test_dir, "fake_home" });
+    defer allocator.free(fake_home);
+    try fs.makePath(fake_home);
+
+    const tmp_src = try std.fs.path.join(allocator, &.{ tmp_test_dir, "src" });
+    defer allocator.free(tmp_src);
+    try fs.makePath(tmp_src);
+
+    const test_file_name = "test_font.ttf";
+    const src_file = try std.fs.path.join(allocator, &.{ tmp_src, test_file_name });
+    defer allocator.free(src_file);
+    const sf = try fs.createFileAbsolute(src_file, .{});
+    try sf.writePositionalAll(paths.getProcessIo(), "ttf-data", 0);
+    sf.close(paths.getProcessIo());
+
+    // Mock editor script that keeps all files (exits 0 without modifying manifest)
+    const script_path = try std.fmt.allocPrint(allocator, "/tmp/rice-mock-editor-dot-{d}.sh", .{fs.getMilliTimestamp()});
+    defer allocator.free(script_path);
+    defer fs.deleteFileAbsolute(script_path) catch {};
+
+    const script_content =
+        \\#!/bin/sh
+        \\exit 0
+    ;
+    const ef = try fs.createFileAbsolute(script_path, .{ .permissions = @enumFromInt(0o755) });
+    try ef.writePositionalAll(paths.getProcessIo(), script_content, 0);
+    ef.close(paths.getProcessIo());
+
+    // When custom_dest is ".", it must install to cwd, NOT fake_home!
+    try manifest.runInteractiveInstall(allocator, fake_home, tmp_src, ".", true, script_path);
+
+    var cwd_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const cwd_len = try std.process.currentPath(paths.getProcessIo(), &cwd_buf);
+    const expected_cwd_file = try std.fs.path.join(allocator, &.{ cwd_buf[0..cwd_len], test_file_name });
+    defer allocator.free(expected_cwd_file);
+    defer fs.deleteFileAbsolute(expected_cwd_file) catch {};
+
+    const wrong_home_file = try std.fs.path.join(allocator, &.{ fake_home, test_file_name });
+    defer allocator.free(wrong_home_file);
+
+    try std.testing.expect(fs.isFileAbsolute(expected_cwd_file));
+    try std.testing.expect(!fs.isFileAbsolute(wrong_home_file));
+}
+
+test "install: interactive manifest basename shorthand resolves nested file" {
+    const allocator = std.testing.allocator;
+
+    const tmp_src = try std.fmt.allocPrint(allocator, "/tmp/rice-test-basename-{d}", .{fs.getMilliTimestamp()});
+    defer allocator.free(tmp_src);
+    try fs.makePath(tmp_src);
+    defer fs.deleteTreeAbsolute(tmp_src) catch {};
+
+    // Create a font in a nested directory
+    const font_rel = "hinted/ttf/NotoSerif-Regular.ttf";
+    const font_abs = try std.fs.path.join(allocator, &.{ tmp_src, font_rel });
+    defer allocator.free(font_abs);
+    try fs.makePath(std.fs.path.dirname(font_abs).?);
+    const ff = try fs.createFileAbsolute(font_abs, .{});
+    ff.close(paths.getProcessIo());
+
+    const original_files = [_][]const u8{font_rel};
+
+    // User writes just the basename in the manifest
+    const user_entry = [_][]const u8{"NotoSerif-Regular.ttf"};
+
+    var validated = try manifest.validateManifestPaths(allocator, &user_entry, &original_files, tmp_src);
+    defer {
+        for (validated.items) |v| v.deinit(allocator);
+        validated.deinit(allocator);
+    }
+
+    try std.testing.expectEqual(@as(usize, 1), validated.items.len);
+    // src_path must resolve to the full nested path
+    try std.testing.expectEqualStrings(font_rel, validated.items[0].src_path);
+    // dst_path is the basename since the user only gave the basename
+    try std.testing.expectEqualStrings("NotoSerif-Regular.ttf", validated.items[0].dst_path);
+}
+
+test "install: interactive manifest arrow rename syntax" {
+    const allocator = std.testing.allocator;
+
+    const tmp_src = try std.fmt.allocPrint(allocator, "/tmp/rice-test-rename-{d}", .{fs.getMilliTimestamp()});
+    defer allocator.free(tmp_src);
+    try fs.makePath(tmp_src);
+    defer fs.deleteTreeAbsolute(tmp_src) catch {};
+
+    const font_rel = "hinted/ttf/NotoSerif-Regular.ttf";
+    const font_abs = try std.fs.path.join(allocator, &.{ tmp_src, font_rel });
+    defer allocator.free(font_abs);
+    try fs.makePath(std.fs.path.dirname(font_abs).?);
+    const ff = try fs.createFileAbsolute(font_abs, .{});
+    ff.close(paths.getProcessIo());
+
+    const original_files = [_][]const u8{font_rel};
+
+    // User specifies source -> destination rename
+    const user_entry = [_][]const u8{"hinted/ttf/NotoSerif-Regular.ttf -> NotoSerif-Regular.ttf"};
+
+    var validated = try manifest.validateManifestPaths(allocator, &user_entry, &original_files, tmp_src);
+    defer {
+        for (validated.items) |v| v.deinit(allocator);
+        validated.deinit(allocator);
+    }
+
+    try std.testing.expectEqual(@as(usize, 1), validated.items.len);
+    try std.testing.expectEqualStrings(font_rel, validated.items[0].src_path);
+    try std.testing.expectEqualStrings("NotoSerif-Regular.ttf", validated.items[0].dst_path);
+}
+
+test "install: interactive manifest arrow rename with basename source shorthand" {
+    const allocator = std.testing.allocator;
+
+    const tmp_src = try std.fmt.allocPrint(allocator, "/tmp/rice-test-rename-base-{d}", .{fs.getMilliTimestamp()});
+    defer allocator.free(tmp_src);
+    try fs.makePath(tmp_src);
+    defer fs.deleteTreeAbsolute(tmp_src) catch {};
+
+    const font_rel = "hinted/ttf/NotoSerif-Regular.ttf";
+    const font_abs = try std.fs.path.join(allocator, &.{ tmp_src, font_rel });
+    defer allocator.free(font_abs);
+    try fs.makePath(std.fs.path.dirname(font_abs).?);
+    const ff = try fs.createFileAbsolute(font_abs, .{});
+    ff.close(paths.getProcessIo());
+
+    const original_files = [_][]const u8{font_rel};
+
+    // Basename shorthand source -> renamed destination
+    const user_entry = [_][]const u8{"NotoSerif-Regular.ttf -> fonts/NotoSerif-Regular.ttf"};
+
+    var validated = try manifest.validateManifestPaths(allocator, &user_entry, &original_files, tmp_src);
+    defer {
+        for (validated.items) |v| v.deinit(allocator);
+        validated.deinit(allocator);
+    }
+
+    try std.testing.expectEqual(@as(usize, 1), validated.items.len);
+    try std.testing.expectEqualStrings(font_rel, validated.items[0].src_path);
+    try std.testing.expectEqualStrings("fonts/NotoSerif-Regular.ttf", validated.items[0].dst_path);
+}
+
+test "install: interactive manifest installs flattened file with basename shorthand to custom dest" {
+    const allocator = std.testing.allocator;
+
+    const tmp_test_dir = try std.fmt.allocPrint(allocator, "/tmp/rice-test-flat-{d}", .{fs.getMilliTimestamp()});
+    defer allocator.free(tmp_test_dir);
+    try fs.makePath(tmp_test_dir);
+    defer fs.deleteTreeAbsolute(tmp_test_dir) catch {};
+
+    const tmp_src = try std.fs.path.join(allocator, &.{ tmp_test_dir, "src" });
+    defer allocator.free(tmp_src);
+    try fs.makePath(tmp_src);
+
+    const tmp_dst = try std.fs.path.join(allocator, &.{ tmp_test_dir, "dst" });
+    defer allocator.free(tmp_dst);
+    try fs.makePath(tmp_dst);
+
+    // Font nested deep inside a zip-extracted structure
+    const font_rel = "NotoSerif/hinted/ttf/NotoSerif-Regular.ttf";
+    const font_abs = try std.fs.path.join(allocator, &.{ tmp_src, font_rel });
+    defer allocator.free(font_abs);
+    try fs.makePath(std.fs.path.dirname(font_abs).?);
+    const ff = try fs.createFileAbsolute(font_abs, .{});
+    try ff.writePositionalAll(paths.getProcessIo(), "ttf-data", 0);
+    ff.close(paths.getProcessIo());
+
+    // Mock editor that rewrites the manifest to use basename shorthand
+    const script_path = try std.fmt.allocPrint(allocator, "/tmp/rice-mock-editor-flat-{d}.sh", .{fs.getMilliTimestamp()});
+    defer allocator.free(script_path);
+    defer fs.deleteFileAbsolute(script_path) catch {};
+
+    const script_content =
+        \\#!/bin/sh
+        \\echo "NotoSerif-Regular.ttf" > "$1"
+    ;
+    const ef = try fs.createFileAbsolute(script_path, .{ .permissions = @enumFromInt(0o755) });
+    try ef.writePositionalAll(paths.getProcessIo(), script_content, 0);
+    ef.close(paths.getProcessIo());
+
+    // Install with custom destination and basename shorthand in manifest
+    try manifest.runInteractiveInstall(allocator, tmp_dst, tmp_src, tmp_dst, true, script_path);
+
+    // Expect file to be at dst/NotoSerif-Regular.ttf (flat, not nested)
+    const expected = try std.fs.path.join(allocator, &.{ tmp_dst, "NotoSerif-Regular.ttf" });
+    defer allocator.free(expected);
+
+    // Should NOT be nested deep
+    const nested = try std.fs.path.join(allocator, &.{ tmp_dst, font_rel });
+    defer allocator.free(nested);
+
+    try std.testing.expect(fs.isFileAbsolute(expected));
+    try std.testing.expect(!fs.isFileAbsolute(nested));
 }

@@ -186,8 +186,7 @@ pub fn runDirectURLInstallInteractive(allocator: Allocator, homeDir: []const u8,
         }
 
         if (interactiveFlag) {
-            const custom_dst = if (std.mem.eql(u8, rawDest, ".")) null else rawDest;
-            return manifest_mod.runInteractiveInstall(allocator, homeDir, target_extract_path, custom_dst, forceFlag, null);
+            return manifest_mod.runInteractiveInstall(allocator, homeDir, target_extract_path, rawDest, forceFlag, null);
         }
 
         var use_sudo = false;
@@ -256,8 +255,7 @@ pub fn runDirectURLInstallInteractive(allocator: Allocator, homeDir: []const u8,
         }
     } else {
         if (interactiveFlag) {
-            const custom_dst = if (std.mem.eql(u8, rawDest, ".")) null else rawDest;
-            return manifest_mod.runInteractiveInstall(allocator, homeDir, tmp_dir_path, custom_dst, forceFlag, null);
+            return manifest_mod.runInteractiveInstall(allocator, homeDir, tmp_dir_path, rawDest, forceFlag, null);
         }
 
         fs.installPath(allocator, dl_path, dest_abs) catch |err| {

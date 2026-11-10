@@ -128,7 +128,15 @@ pub fn runBinList(allocator: Allocator, homeDir: []const u8) !void {
         if (fs.openFileAbsolute(bin_p, .{})) |f| {
             f.close(paths.getProcessIo());
             status = "installed";
-        } else |_| {}
+        } else |_| {
+            if (std.process.run(allocator, paths.getProcessIo(), .{ .argv = &.{ "which", name } })) |res| {
+                defer {
+                    allocator.free(res.stdout);
+                    allocator.free(res.stderr);
+                }
+                if (res.term == .exited and res.term.exited == 0) status = "installed";
+            } else |_| {}
+        }
 
         std.debug.print("{s:<10}{s}\n", .{ name, status });
     }
@@ -163,6 +171,18 @@ pub fn runBinRemove(allocator: Allocator, homeDir: []const u8, args: []const []c
 
     try fs.deleteFileAbsolute(target_file);
     std.debug.print("Removed '{s}' from {s}\n", .{ name, bin_dir });
+
+    const ini_path = try paths.getRiceIniPath(allocator, homeDir);
+    defer allocator.free(ini_path);
+    if (config.loadConfigOrDefault(allocator, ini_path)) |cfg| {
+        defer {
+            cfg.deinit();
+            allocator.destroy(cfg);
+        }
+        if (cfg.removeBinary(name)) {
+            config.saveConfig(allocator, ini_path, cfg) catch {};
+        }
+    } else |_| {}
 }
 
 pub fn binCmd(allocator: Allocator, homeDir: []const u8, args: []const []const u8) !void {

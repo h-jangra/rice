@@ -34,8 +34,9 @@ pub fn pullCmd(allocator: Allocator, git: *git_mod.Git, homeDir: []const u8, arg
     defer allocator.free(ini_path);
 
     if (git.hasCommits()) {
-        const local_head = git.output(&.{ "rev-parse", "HEAD" }) catch "";
-        defer allocator.free(local_head);
+        const local_head_opt = git.output(&.{ "rev-parse", "HEAD" }) catch null;
+        defer if (local_head_opt) |lh| allocator.free(lh);
+        const local_head = local_head_opt orelse "";
 
         if (std.mem.eql(u8, local_head, remote_head)) {
             var ini_exists = false;
@@ -67,8 +68,9 @@ pub fn pullCmd(allocator: Allocator, git: *git_mod.Git, homeDir: []const u8, arg
             return;
         }
 
-        const diff_raw = git.output(&.{ "diff", "--name-only", "HEAD", "FETCH_HEAD" }) catch "";
-        defer allocator.free(diff_raw);
+        const diff_raw_opt = git.output(&.{ "diff", "--name-only", "HEAD", "FETCH_HEAD" }) catch null;
+        defer if (diff_raw_opt) |dr| allocator.free(dr);
+        const diff_raw = diff_raw_opt orelse "";
 
         var conflicts: std.ArrayList([]const u8) = .empty;
         defer {
@@ -89,7 +91,14 @@ pub fn pullCmd(allocator: Allocator, git: *git_mod.Git, homeDir: []const u8, arg
 
                 if (fs.openFileAbsolute(full_p, .{})) |f| {
                     defer f.close(paths.getProcessIo());
-                    const local_bytes = std.Io.Dir.cwd().readFileAlloc(paths.getProcessIo(), full_p, allocator, .limited(50 * 1024 * 1024)) catch continue;
+                    const local_bytes = std.Io.Dir.cwd().readFileAlloc(paths.getProcessIo(), full_p, allocator, .limited(100 * 1024 * 1024)) catch {
+                        if (std.mem.eql(u8, rel_file, ".rice.ini")) {
+                            ini_has_local_mods = true;
+                        } else {
+                            try conflicts.append(allocator, try allocator.dupe(u8, rel_file));
+                        }
+                        continue;
+                    };
                     defer allocator.free(local_bytes);
 
                     if (git.getHEADFileContent(rel_file)) |head_bytes| {
@@ -197,7 +206,10 @@ pub fn pullCmd(allocator: Allocator, git: *git_mod.Git, homeDir: []const u8, arg
 
             if (fs.openFileAbsolute(full_p, .{})) |f| {
                 defer f.close(paths.getProcessIo());
-                const local_bytes = std.Io.Dir.cwd().readFileAlloc(paths.getProcessIo(), full_p, allocator, .limited(50 * 1024 * 1024)) catch continue;
+                const local_bytes = std.Io.Dir.cwd().readFileAlloc(paths.getProcessIo(), full_p, allocator, .limited(100 * 1024 * 1024)) catch {
+                    try conflicts.append(allocator, try allocator.dupe(u8, rel_file));
+                    continue;
+                };
                 defer allocator.free(local_bytes);
 
                 if (git.getRefFileContent("FETCH_HEAD", rel_file)) |remote_bytes| {
@@ -241,6 +253,8 @@ pub fn pullCmd(allocator: Allocator, git: *git_mod.Git, homeDir: []const u8, arg
         const upstream_arg = try std.fmt.allocPrint(allocator, "--set-upstream-to=origin/{s}", .{branch});
         defer allocator.free(upstream_arg);
         _ = git.run(&.{ "branch", upstream_arg, branch }) catch {};
+        _ = git.bareRun(&.{ "read-tree", "HEAD" }) catch {};
+        _ = git.run(&.{ "checkout", "HEAD", "--", "." }) catch {};
 
         if (git.getHEADFileContent(".rice.ini")) |ini_bytes| {
             defer allocator.free(ini_bytes);

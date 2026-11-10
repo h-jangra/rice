@@ -137,7 +137,10 @@ pub fn restoreCmd(allocator: Allocator, git: *git_mod.Git, homeDir: []const u8, 
 
         if (fs.openFileAbsolute(full_p, .{})) |f| {
             defer f.close(paths.getProcessIo());
-            const local_bytes = std.Io.Dir.cwd().readFileAlloc(paths.getProcessIo(), full_p, allocator, .limited(50 * 1024 * 1024)) catch continue;
+            const local_bytes = std.Io.Dir.cwd().readFileAlloc(paths.getProcessIo(), full_p, allocator, .limited(100 * 1024 * 1024)) catch {
+                try conflicts.append(allocator, try allocator.dupe(u8, rel_file));
+                continue;
+            };
             defer allocator.free(local_bytes);
 
             if (git.getHEADFileContent(rel_file) catch null) |repo_bytes| {

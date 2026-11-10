@@ -15,11 +15,23 @@ pub fn isExecutableBinary(data: []const u8) bool {
     {
         return true;
     }
-    if (data.len >= 2 and std.mem.eql(u8, data[0..2], "#!")) {
+    if (data.len >= 2 and data[0] == '#' and data[1] == '!') {
         const sample = data[0..@min(data.len, 256)];
         const interpreters = [_][]const u8{ "sh", "bash", "python", "node", "perl", "ruby", "env" };
+        var start: usize = 2;
+        while (start < sample.len and (sample[start] == ' ' or sample[start] == '\t')) start += 1;
+        var end = start;
+        while (end < sample.len and sample[end] != ' ' and sample[end] != '\t' and sample[end] != '\n' and sample[end] != '\r') end += 1;
+        var interp_token = std.fs.path.basename(sample[start..end]);
+        if (std.mem.eql(u8, interp_token, "env")) {
+            var nstart = end;
+            while (nstart < sample.len and (sample[nstart] == ' ' or sample[nstart] == '\t')) nstart += 1;
+            var nend = nstart;
+            while (nend < sample.len and sample[nend] != ' ' and sample[nend] != '\t' and sample[nend] != '\n' and sample[nend] != '\r') nend += 1;
+            interp_token = std.fs.path.basename(sample[nstart..nend]);
+        }
         for (interpreters) |interp| {
-            if (std.mem.indexOf(u8, sample, interp) != null) return true;
+            if (std.ascii.startsWithIgnoreCase(interp_token, interp)) return true;
         }
     }
     return false;

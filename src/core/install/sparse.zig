@@ -319,7 +319,7 @@ pub fn installDotfiles(allocator: Allocator, git: *git_mod.Git, homeDir: []const
         return error.NoRepoConfigured;
     }
 
-    const tmp_dir_path = try std.fmt.allocPrint(allocator, "/tmp/rice-install-{d}", .{fs.getMilliTimestamp()});
+    const tmp_dir_path = try std.fmt.allocPrint(allocator, "/tmp/rice-install-{d}", .{fs.getTempId()});
     defer allocator.free(tmp_dir_path);
     try fs.makePath(tmp_dir_path);
     defer fs.deleteTreeAbsolute(tmp_dir_path) catch {};
@@ -565,7 +565,7 @@ pub fn installDotfiles(allocator: Allocator, git: *git_mod.Git, homeDir: []const
             };
 
             if (!use_sudo and builtin.os.tag != .windows) {
-                const probe_path = try std.fmt.allocPrint(allocator, "{s}/.rice-probe-{d}", .{ item.abs_path, fs.getMilliTimestamp() });
+                const probe_path = try std.fmt.allocPrint(allocator, "{s}/.rice-probe-{d}", .{ item.abs_path, fs.getTempId() });
                 defer allocator.free(probe_path);
                 if (fs.createFileAbsolute(probe_path, .{})) |probe_file| {
                     probe_file.close(paths.getProcessIo());

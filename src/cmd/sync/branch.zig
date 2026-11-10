@@ -53,8 +53,9 @@ pub fn switchCmd(allocator: Allocator, git: *git_mod.Git, homeDir: []const u8, a
         return error.BranchNameRequired;
     }
 
-    const cur_branch = git.getCurrentBranch() catch "";
-    defer allocator.free(cur_branch);
+    const cur_branch_opt = git.getCurrentBranch() catch null;
+    defer if (cur_branch_opt) |cb| allocator.free(cb);
+    const cur_branch = cur_branch_opt orelse "";
 
     if (!create_new and std.mem.eql(u8, cur_branch, branch_name.?) and !force and !merge) {
         std.debug.print("Already on branch '{s}'\n", .{branch_name.?});

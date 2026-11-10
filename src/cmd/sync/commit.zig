@@ -287,11 +287,12 @@ pub fn pushCmd(allocator: Allocator, git: *git_mod.Git, homeDir: []const u8, arg
 
     if (has_staged) {
         if (msg_opt) |custom_msg| {
-            _ = git.commit(custom_msg) catch {};
-        } else if (generateAutoCommitMessage(allocator, git, homeDir, cfg)) |auto_msg| {
+            try git.commit(custom_msg);
+        } else {
+            const auto_msg = try generateAutoCommitMessage(allocator, git, homeDir, cfg);
             defer allocator.free(auto_msg);
-            _ = git.commit(auto_msg) catch {};
-        } else |_| {}
+            try git.commit(auto_msg);
+        }
     }
 
     std.debug.print("  → Pushing changes...\n", .{});

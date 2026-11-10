@@ -12,7 +12,7 @@ pub fn runDirectURLInstall(allocator: Allocator, homeDir: []const u8, rawURL: []
 }
 
 pub fn runDirectURLInstallInteractive(allocator: Allocator, homeDir: []const u8, rawURL: []const u8, rawDest: []const u8, contentsFlag: bool, forceFlag: bool, interactiveFlag: bool) !void {
-    const tmp_dir_path = try std.fmt.allocPrint(allocator, "/tmp/rice-dl-{d}", .{fs.getMilliTimestamp()});
+    const tmp_dir_path = try std.fmt.allocPrint(allocator, "/tmp/rice-dl-{d}", .{fs.getTempId()});
     defer allocator.free(tmp_dir_path);
     try fs.makePath(tmp_dir_path);
     defer fs.deleteTreeAbsolute(tmp_dir_path) catch {};
@@ -207,7 +207,7 @@ pub fn runDirectURLInstallInteractive(allocator: Allocator, homeDir: []const u8,
         };
 
         if (!use_sudo and builtin.os.tag != .windows) {
-            const probe_path = try std.fmt.allocPrint(allocator, "{s}/.rice-probe-{d}", .{ dest_abs, fs.getMilliTimestamp() });
+            const probe_path = try std.fmt.allocPrint(allocator, "{s}/.rice-probe-{d}", .{ dest_abs, fs.getTempId() });
             defer allocator.free(probe_path);
             if (fs.createFileAbsolute(probe_path, .{})) |probe_file| {
                 probe_file.close(paths.getProcessIo());

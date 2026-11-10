@@ -51,9 +51,9 @@ pub fn switchBranch(allocator: Allocator, rice_dir: []const u8, home_dir: []cons
             const origin_branch = try std.fmt.allocPrint(allocator, "origin/{s}", .{branch});
             defer allocator.free(origin_branch);
 
-            if (exec.execRun(allocator, rice_dir, home_dir, &.{ "branch", "--track", branch, origin_branch }, false)) {} else |_| {
+            exec.execRun(allocator, rice_dir, home_dir, &.{ "branch", "--track", branch, origin_branch }, false) catch {
                 try exec.execRun(allocator, rice_dir, home_dir, &.{ "branch", branch, origin_branch }, false);
-            }
+            };
         } else {
             std.debug.print("error: pathspec '{s}' did not match any file(s) known to git\n", .{branch});
             return error.BranchNotFound;
@@ -64,6 +64,7 @@ pub fn switchBranch(allocator: Allocator, rice_dir: []const u8, home_dir: []cons
 
     if (has_commits) {
         _ = exec.execRun(allocator, rice_dir, home_dir, &.{ "read-tree", "HEAD" }, false) catch {};
+        _ = exec.execRun(allocator, rice_dir, home_dir, &.{ "checkout", "HEAD", "--", "." }, true) catch {};
     }
 }
 

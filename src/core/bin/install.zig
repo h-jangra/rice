@@ -32,7 +32,7 @@ pub fn installBinary(allocator: Allocator, opts: InstallBinOptions, homeDir: []c
     };
     defer src.deinit(allocator);
 
-    const tmp_dir_path = try std.fmt.allocPrint(allocator, "/tmp/rice-bin-{d}", .{fs.getMilliTimestamp()});
+    const tmp_dir_path = try std.fmt.allocPrint(allocator, "/tmp/rice-bin-{d}", .{fs.getTempId()});
     defer allocator.free(tmp_dir_path);
     try fs.makePath(tmp_dir_path);
     defer fs.deleteTreeAbsolute(tmp_dir_path) catch {};
@@ -307,7 +307,7 @@ pub fn installBinary(allocator: Allocator, opts: InstallBinOptions, homeDir: []c
             return err;
         };
     } else {
-        const staging_path = try std.fmt.allocPrint(allocator, "{s}/.rice-tmp-{d}", .{ parent_dir, fs.getMilliTimestamp() });
+        const staging_path = try std.fmt.allocPrint(allocator, "{s}/.rice-tmp-{d}", .{ parent_dir, fs.getTempId() });
         defer allocator.free(staging_path);
 
         var st_f_opt: ?std.Io.File = null;

@@ -433,7 +433,7 @@ pub fn runInteractiveInstall(
         return;
     }
 
-    const manifest_path = try std.fmt.allocPrint(allocator, "/tmp/rice-manifest-{d}.txt", .{fs.getMilliTimestamp()});
+    const manifest_path = try std.fmt.allocPrint(allocator, "/tmp/rice-manifest-{d}.txt", .{fs.getTempId()});
     defer allocator.free(manifest_path);
     defer fs.deleteFileAbsolute(manifest_path) catch {};
 

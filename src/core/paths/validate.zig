@@ -39,17 +39,16 @@ pub fn validateSourcePath(allocator: Allocator, source: []const u8) ![]u8 {
 
 pub fn detectSensitiveFile(path_str: []const u8) ?[]const u8 {
     const base = std.fs.path.basename(path_str);
-    var lower_base_buf: [256]u8 = undefined;
-    const lower_base = if (base.len <= 256) blk: {
-        for (base, 0..) |c, i| lower_base_buf[i] = std.ascii.toLower(c);
-        break :blk lower_base_buf[0..base.len];
-    } else base;
 
-    var lower_path_buf: [1024]u8 = undefined;
-    const lower_path = if (path_str.len <= 1024) blk: {
-        for (path_str, 0..) |c, i| lower_path_buf[i] = if (c == '\\') '/' else std.ascii.toLower(c);
-        break :blk lower_path_buf[0..path_str.len];
-    } else path_str;
+    const lower_base_alloc = std.heap.page_allocator.alloc(u8, base.len) catch return null;
+    defer std.heap.page_allocator.free(lower_base_alloc);
+    for (base, 0..) |c, i| lower_base_alloc[i] = std.ascii.toLower(c);
+    const lower_base = lower_base_alloc;
+
+    const lower_path_alloc = std.heap.page_allocator.alloc(u8, path_str.len) catch return null;
+    defer std.heap.page_allocator.free(lower_path_alloc);
+    for (path_str, 0..) |c, i| lower_path_alloc[i] = if (c == '\\') '/' else std.ascii.toLower(c);
+    const lower_path = lower_path_alloc;
 
     if (std.mem.startsWith(u8, lower_path, ".ssh/") or std.mem.indexOf(u8, lower_path, "/.ssh/") != null or std.mem.startsWith(u8, lower_path, "~/.ssh/")) {
         if ((std.mem.startsWith(u8, lower_base, "id_") and !std.mem.endsWith(u8, lower_base, ".pub")) or

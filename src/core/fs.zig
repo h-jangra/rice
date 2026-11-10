@@ -129,9 +129,18 @@ pub fn getMilliTimestamp() i64 {
     return @as(i64, @intCast(@divFloor(std.Io.Timestamp.now(paths.getProcessIo(), .real).nanoseconds, 1_000_000)));
 }
 
+var temp_counter = std.atomic.Value(u32).init(0);
+
+pub fn getTempId() i64 {
+    const ms = getMilliTimestamp();
+    const pid: i64 = if (builtin.os.tag == .linux) @intCast(std.os.linux.getpid()) else 0;
+    const counter: i64 = @intCast(temp_counter.fetchAdd(1, .monotonic));
+    return ms * 1_000_000 + pid * 1_000 + @mod(counter, 1_000);
+}
+
 pub fn extractTarWithSystem(allocator: Allocator, data: []const u8, destDir: []const u8) !void {
     var tmp_dir_buf: [max_path_bytes]u8 = undefined;
-    const tmp_file_path = try std.fmt.bufPrint(&tmp_dir_buf, "/tmp/rice-tar-{d}.tmp", .{getMilliTimestamp()});
+    const tmp_file_path = try std.fmt.bufPrint(&tmp_dir_buf, "/tmp/rice-tar-{d}.tmp", .{getTempId()});
 
     const file = try createFileAbsolute(tmp_file_path, .{ .permissions = @enumFromInt(0o600) });
     try file.writePositionalAll(paths.getProcessIo(), data, 0);
@@ -159,7 +168,7 @@ pub fn extractTarWithSystem(allocator: Allocator, data: []const u8, destDir: []c
 
 pub fn extractZipWithSystem(allocator: Allocator, data: []const u8, destDir: []const u8) !void {
     var tmp_dir_buf: [max_path_bytes]u8 = undefined;
-    const tmp_file_path = try std.fmt.bufPrint(&tmp_dir_buf, "/tmp/rice-zip-{d}.zip", .{getMilliTimestamp()});
+    const tmp_file_path = try std.fmt.bufPrint(&tmp_dir_buf, "/tmp/rice-zip-{d}.zip", .{getTempId()});
 
     const file = try createFileAbsolute(tmp_file_path, .{ .permissions = @enumFromInt(0o600) });
     try file.writePositionalAll(paths.getProcessIo(), data, 0);

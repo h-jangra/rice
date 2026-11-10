@@ -291,8 +291,9 @@ pub fn statusCmd(allocator: Allocator, git: *git_mod.Git, homeDir: []const u8, a
     try cmd_args.appendSlice(allocator, &.{ "status", "--porcelain", "-u", "--" });
     for (path_list.items) |p| try cmd_args.append(allocator, p);
 
-    const raw_status = git.output(cmd_args.items) catch "";
-    defer allocator.free(raw_status);
+    const raw_status_opt = git.output(cmd_args.items) catch null;
+    defer if (raw_status_opt) |rs| allocator.free(rs);
+    const raw_status = raw_status_opt orelse "";
 
     var modified: std.ArrayList([]const u8) = .empty;
     defer {

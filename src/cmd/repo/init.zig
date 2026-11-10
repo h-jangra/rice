@@ -77,7 +77,12 @@ pub fn initCmd(allocator: Allocator, git: *git_mod.Git, homeDir: []const u8, arg
         };
     }
 
-    fs.deleteTreeAbsolute(git.rice_dir) catch {};
+    if (fs.openDirAbsolute(git.rice_dir, .{})) |d| {
+        var dir = d;
+        dir.close(paths.getProcessIo());
+        std.debug.print("Error: repository already exists at {s}. Remove it first to reinitialize.\n", .{git.rice_dir});
+        return error.RepositoryAlreadyExists;
+    } else |_| {}
     try git.initBare();
 
     const ini_path = try paths.getRiceIniPath(allocator, homeDir);

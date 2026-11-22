@@ -7,6 +7,18 @@ const config = @import("../../core/config.zig");
 const fs = @import("../../core/fs.zig");
 const discovery = @import("../../core/install/discovery.zig");
 
+const Io = std.Io;
+
+fn nowMs() i64 {
+    const ts = Io.Clock.Timestamp.now(paths.getProcessIo(), .awake);
+    return ts.raw.toMilliseconds();
+}
+
+fn logStage(name: []const u8, start_ms: i64) void {
+    const elapsed = nowMs() - start_ms;
+    std.debug.print("[timing] {s}: {d}ms\n", .{ name, elapsed });
+}
+
 const RemoteInitInfo = struct {
     branch: []u8,
     ini_content: ?[]u8,
@@ -61,6 +73,7 @@ fn detectRemoteBranch(allocator: Allocator, repo_url: []const u8) ![]u8 {
 
 
 pub fn initCmd(allocator: Allocator, git: *git_mod.Git, homeDir: []const u8, args: []const []const u8) !void {
+    const t_total = nowMs();
     var remote_url_arg: ?[]const u8 = null;
     if (args.len > 0) {
         const trimmed = std.mem.trim(u8, args[0], " \t\r\n");
@@ -83,30 +96,43 @@ pub fn initCmd(allocator: Allocator, git: *git_mod.Git, homeDir: []const u8, arg
         std.debug.print("Error: repository already exists at {s}. Remove it first to reinitialize.\n", .{git.rice_dir});
         return error.RepositoryAlreadyExists;
     } else |_| {}
+
+    var t = nowMs();
     try git.initBare();
+    logStage("initBare", t);
 
     const ini_path = try paths.getRiceIniPath(allocator, homeDir);
     defer allocator.free(ini_path);
 
     var branch_name: ?[]u8 = null;
     defer if (branch_name) |b| allocator.free(b);
+    var has_commits = false;
 
     if (normalized_remote) |nurl| {
-        git.setRemote(nurl) catch |err| {
+        t = nowMs();
+        git.run(&.{ "remote", "add", "origin", nurl }) catch |err| {
             std.debug.print("Error: failed to set remote origin: {s}\n", .{@errorName(err)});
             return err;
         };
+        _ = git.run(&.{ "config", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*" }) catch {};
+        logStage("setRemote", t);
 
+        t = nowMs();
         branch_name = detectRemoteBranch(allocator, nurl) catch try allocator.dupe(u8, defaultBranch());
-
-        _ = git.bareRun(&.{ "fetch", "origin" }) catch {
-            _ = git.bareRun(&.{ "fetch", "--depth=1", "origin", branch_name.? }) catch {};
-        };
+        logStage("detectRemoteBranch", t);
 
         const bname = branch_name.?;
+
+        t = nowMs();
+        _ = git.bareRun(&.{ "fetch", "--depth=1", "origin", bname }) catch {
+            _ = git.bareRun(&.{ "fetch", "origin", bname }) catch {};
+        };
+        logStage("fetch", t);
+
         const remote_ref = try std.fmt.allocPrint(allocator, "refs/remotes/origin/{s}", .{bname});
         defer allocator.free(remote_ref);
 
+        t = nowMs();
         const head_hash = git.output(&.{ "rev-parse", remote_ref }) catch git.output(&.{ "rev-parse", "FETCH_HEAD" }) catch null;
         if (head_hash) |hash| {
             defer allocator.free(hash);
@@ -129,9 +155,12 @@ pub fn initCmd(allocator: Allocator, git: *git_mod.Git, homeDir: []const u8, arg
                     file.close(paths.getProcessIo());
                 } else |_| {}
             } else |_| {}
+            has_commits = true;
         }
+        logStage("refSetup", t);
     }
 
+    t = nowMs();
     var cfg = try config.loadConfigOrDefault(allocator, ini_path);
     defer {
         cfg.deinit();
@@ -151,7 +180,9 @@ pub fn initCmd(allocator: Allocator, git: *git_mod.Git, homeDir: []const u8, arg
     }
 
     try config.saveConfig(allocator, ini_path, cfg);
+    logStage("config", t);
 
+    t = nowMs();
     const target_branch = if (cfg.branch) |b| b else defaultBranch();
     const sym_ref = try std.fmt.allocPrint(allocator, "refs/heads/{s}", .{target_branch});
     defer allocator.free(sym_ref);
@@ -159,10 +190,12 @@ pub fn initCmd(allocator: Allocator, git: *git_mod.Git, homeDir: []const u8, arg
 
     try git.add(&.{".rice.ini"});
 
-    if (!git.hasCommits()) {
+    if (!has_commits) {
         _ = git.commit("Initialize rice dotfiles repository") catch {};
     }
+    logStage("indexAndCommit", t);
 
+    logStage("total", t_total);
     std.debug.print("Initialized bare repository in {s}\n", .{git.rice_dir});
     if (normalized_remote != null or remote_url_arg != null) {
         const disp_remote = if (remote_url_arg) |r| r else normalized_remote.?;

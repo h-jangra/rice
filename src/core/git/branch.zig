@@ -47,6 +47,17 @@ pub fn switchBranch(allocator: Allocator, rice_dir: []const u8, home_dir: []cons
         const remote_ref = try std.fmt.allocPrint(allocator, "refs/remotes/origin/{s}", .{branch});
         defer allocator.free(remote_ref);
 
+        if (!refExists(allocator, rice_dir, home_dir, remote_ref)) {
+            // On-demand fetch for single-branch init repos.
+            if (exec.execOutput(allocator, rice_dir, home_dir, &.{ "fetch", "--depth=1", "origin", branch }, false)) |out| {
+                allocator.free(out);
+            } else |_| {
+                if (exec.execOutput(allocator, rice_dir, home_dir, &.{ "fetch", "origin", branch }, false)) |out2| {
+                    allocator.free(out2);
+                } else |_| {}
+            }
+        }
+
         if (refExists(allocator, rice_dir, home_dir, remote_ref)) {
             const origin_branch = try std.fmt.allocPrint(allocator, "origin/{s}", .{branch});
             defer allocator.free(origin_branch);
@@ -64,7 +75,6 @@ pub fn switchBranch(allocator: Allocator, rice_dir: []const u8, home_dir: []cons
 
     if (has_commits) {
         _ = exec.execRun(allocator, rice_dir, home_dir, &.{ "read-tree", "HEAD" }, false) catch {};
-        _ = exec.execRun(allocator, rice_dir, home_dir, &.{ "checkout", "HEAD", "--", "." }, true) catch {};
     }
 }
 

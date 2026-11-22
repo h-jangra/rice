@@ -432,6 +432,45 @@ test "repo: init with remote that has .rice.ini fetches and loads it" {
     try std.testing.expect(cfg.binaries.contains("bat"));
 }
 
+test "repo: init with remote completes within performance budget" {
+    const allocator = std.testing.allocator;
+    const Io = std.Io;
+
+    const fake_remote = try std.fmt.allocPrint(allocator, "/tmp/rice-test-perf-remote-{d}", .{fs.getMilliTimestamp()});
+    defer allocator.free(fake_remote);
+    try fs.makePath(fake_remote);
+    defer fs.deleteTreeAbsolute(fake_remote) catch {};
+
+    try discovery.execGitInDir(allocator, fake_remote, &.{ "init", "-b", "main" });
+    try discovery.execGitInDir(allocator, fake_remote, &.{ "config", "user.name", "TestUser" });
+    try discovery.execGitInDir(allocator, fake_remote, &.{ "config", "user.email", "test@example.com" });
+
+    const sample_file = try std.fs.path.join(allocator, &.{ fake_remote, "hello.txt" });
+    defer allocator.free(sample_file);
+    const f = try fs.createFileAbsolute(sample_file, .{});
+    try f.writePositionalAll(paths.getProcessIo(), "hello world", 0);
+    f.close(paths.getProcessIo());
+
+    try discovery.execGitInDir(allocator, fake_remote, &.{ "add", "hello.txt" });
+    try discovery.execGitInDir(allocator, fake_remote, &.{ "commit", "-m", "initial commit" });
+
+    const fake_home = try std.fmt.allocPrint(allocator, "/tmp/rice-test-perf-home-{d}", .{fs.getMilliTimestamp()});
+    defer allocator.free(fake_home);
+    try fs.makePath(fake_home);
+    defer fs.deleteTreeAbsolute(fake_home) catch {};
+
+    var git = try git_mod.Git.init(allocator, fake_home);
+    defer git.deinit();
+
+    const start = Io.Clock.Timestamp.now(paths.getProcessIo(), .awake);
+    try cmd_repo.initCmd(allocator, git, fake_home, &.{fake_remote});
+    const elapsed_ms = start.durationTo(Io.Clock.Timestamp.now(paths.getProcessIo(), .awake)).raw.toMilliseconds();
+
+    try std.testing.expect(git.isBareRepo());
+    try std.testing.expect(git.hasCommits());
+    try std.testing.expect(elapsed_ms < 5000);
+}
+
 test "install: direct URL/local archive installation with force flag" {
     const allocator = std.testing.allocator;
     const url_mod = @import("../core/install/url.zig");
@@ -844,7 +883,7 @@ test "repo: commands work properly when .rice.ini is absent" {
     restored_f.close(paths.getProcessIo());
 }
 
-test "sync: branches -a fetches and displays all remote branches" {
+test "sync: branches -a lists all remote branches" {
     const allocator = std.testing.allocator;
     const cmd_sync = @import("../cmd/sync.zig");
 
@@ -895,14 +934,17 @@ test "sync: branches -a fetches and displays all remote branches" {
 
     try cmd_repo.initCmd(allocator, git, fake_home, &.{fake_remote});
 
-    // 3. Test that rice branches -a lists ALL remote branches (main, dev, feature)
+    // 3. rice branches -a should report all remote branches without full object fetch.
     try cmd_sync.branchesCmd(allocator, git, &.{"-a"});
+
+    const ls = try git.bareOutput(&.{ "ls-remote", "--heads", "origin" });
+    defer allocator.free(ls);
+    try std.testing.expect(std.mem.indexOf(u8, ls, "refs/heads/main") != null);
+    try std.testing.expect(std.mem.indexOf(u8, ls, "refs/heads/dev") != null);
+    try std.testing.expect(std.mem.indexOf(u8, ls, "refs/heads/feature") != null);
 
     const out_all = try git.branchList(&.{"-a"});
     defer allocator.free(out_all);
-
-    try std.testing.expect(std.mem.indexOf(u8, out_all, "remotes/origin/main") != null);
-    try std.testing.expect(std.mem.indexOf(u8, out_all, "remotes/origin/dev") != null);
     try std.testing.expect(std.mem.indexOf(u8, out_all, "remotes/origin/feature") != null);
 }
 

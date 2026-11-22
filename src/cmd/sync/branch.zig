@@ -139,31 +139,90 @@ pub fn branchesCmd(allocator: Allocator, git: *git_mod.Git, args: []const []cons
         return error.BareRepoInvalid;
     }
 
-    var branch_args: std.ArrayList([]const u8) = .empty;
-    defer branch_args.deinit(allocator);
-
     var show_remote = false;
+    var remotes_only = false;
+    var extra_args = false;
     for (args) |arg| {
         if (std.mem.eql(u8, arg, "-a") or std.mem.eql(u8, arg, "--all")) {
             show_remote = true;
-            try branch_args.append(allocator, "-a");
         } else if (std.mem.eql(u8, arg, "-r") or std.mem.eql(u8, arg, "--remotes")) {
             show_remote = true;
-            try branch_args.append(allocator, "-r");
+            remotes_only = true;
         } else {
-            try branch_args.append(allocator, arg);
+            extra_args = true;
         }
     }
 
-    if (show_remote) {
+    if (show_remote and !extra_args) {
+        var printed_any = false;
+        if (!remotes_only) {
+            const local_out = git.branchList(&.{}) catch null;
+            if (local_out) |lo| {
+                defer allocator.free(lo);
+                var lines = std.mem.splitScalar(u8, lo, '\n');
+                while (lines.next()) |line| {
+                    const clean = std.mem.trimEnd(u8, line, "\r");
+                    if (clean.len == 0) continue;
+                    std.debug.print("{s}\n", .{clean});
+                    printed_any = true;
+                }
+            }
+        }
+
         if (git.getRemote()) |rurl| {
             defer allocator.free(rurl);
             if (rurl.len > 0) {
-                _ = git.bareRunQuiet(&.{ "config", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*" }) catch {};
-                _ = git.bareRunQuiet(&.{ "fetch", "--prune", "origin" }) catch {};
+                if (git.bareOutput(&.{ "ls-remote", "--heads", "origin" })) |ls| {
+                    defer allocator.free(ls);
+                    var lines = std.mem.splitScalar(u8, ls, '\n');
+                    while (lines.next()) |line| {
+                        const clean = std.mem.trimEnd(u8, line, "\r");
+                        if (clean.len == 0) continue;
+                        // format: <hash>\trefs/heads/<name>
+                        var parts = std.mem.tokenizeAny(u8, clean, " \t");
+                        const hash = parts.next() orelse continue;
+                        const ref = parts.next() orelse continue;
+                        const prefix = "refs/heads/";
+                        if (!std.mem.startsWith(u8, ref, prefix)) continue;
+                        const name = ref[prefix.len..];
+                        if (name.len == 0) continue;
+
+                        if (git.bareOutput(&.{ "cat-file", "-e", hash })) |out| {
+                            allocator.free(out);
+                            const remote_ref = std.fmt.allocPrint(allocator, "refs/remotes/origin/{s}", .{name}) catch continue;
+                            defer allocator.free(remote_ref);
+                            _ = git.bareRunQuiet(&.{ "update-ref", remote_ref, hash }) catch {};
+                        } else |_| {}
+
+                        std.debug.print("  remotes/origin/{s}\n", .{name});
+                        printed_any = true;
+                    }
+                } else |_| {
+                    // Fallback: show locally known remote-tracking refs
+                    const flag: []const u8 = if (remotes_only) "-r" else "-a";
+                    if (git.branchList(&.{flag})) |out| {
+                        defer allocator.free(out);
+                        var lines = std.mem.splitScalar(u8, out, '\n');
+                        while (lines.next()) |line| {
+                            const clean = std.mem.trimEnd(u8, line, "\r");
+                            if (clean.len == 0) continue;
+                            if (remotes_only or std.mem.indexOf(u8, clean, "remotes/") != null) {
+                                std.debug.print("{s}\n", .{clean});
+                                printed_any = true;
+                            }
+                        }
+                    } else |_| {}
+                }
             }
         } else |_| {}
+
+        if (!printed_any) std.debug.print("No branches found.\n", .{});
+        return;
     }
+
+    var branch_args: std.ArrayList([]const u8) = .empty;
+    defer branch_args.deinit(allocator);
+    for (args) |arg| try branch_args.append(allocator, arg);
 
     const out = try git.branchList(branch_args.items);
     defer allocator.free(out);

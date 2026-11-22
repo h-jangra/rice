@@ -8,6 +8,8 @@ const git_mod = @import("../core/git.zig");
 const cmd_repo = @import("../cmd/repo.zig");
 const discovery = @import("../core/install/discovery.zig");
 const manifest = @import("../core/install/manifest.zig");
+const entry = @import("../core/install/entry.zig");
+const sparse = @import("../core/install/sparse.zig");
 
 test "ui: spinner basic lifecycle" {
     const allocator = std.testing.allocator;
@@ -1491,4 +1493,118 @@ test "install: interactive manifest installs flattened file with basename shorth
 
     try std.testing.expect(fs.isFileAbsolute(expected));
     try std.testing.expect(!fs.isFileAbsolute(nested));
+}
+
+test "install: no-args enters interactive mode and never downloads default repo" {
+    const allocator = std.testing.allocator;
+
+    const fake_remote = try std.fmt.allocPrint(allocator, "/tmp/rice-test-noargs-remote-{d}", .{fs.getMilliTimestamp()});
+    defer allocator.free(fake_remote);
+    try fs.makePath(fake_remote);
+    defer fs.deleteTreeAbsolute(fake_remote) catch {};
+
+    try discovery.execGitInDir(allocator, fake_remote, &.{ "init", "-b", "main" });
+    try discovery.execGitInDir(allocator, fake_remote, &.{ "config", "user.name", "TestUser" });
+    try discovery.execGitInDir(allocator, fake_remote, &.{ "config", "user.email", "test@example.com" });
+
+    const remote_file = try std.fs.path.join(allocator, &.{ fake_remote, "should-not-download.txt" });
+    defer allocator.free(remote_file);
+    {
+        const rf = try fs.createFileAbsolute(remote_file, .{});
+        try rf.writePositionalAll(paths.getProcessIo(), "secret", 0);
+        rf.close(paths.getProcessIo());
+    }
+    try discovery.execGitInDir(allocator, fake_remote, &.{ "add", "should-not-download.txt" });
+    try discovery.execGitInDir(allocator, fake_remote, &.{ "commit", "-m", "init" });
+
+    const fake_home = try std.fmt.allocPrint(allocator, "/tmp/rice-test-noargs-home-{d}", .{fs.getMilliTimestamp()});
+    defer allocator.free(fake_home);
+    try fs.makePath(fake_home);
+    defer fs.deleteTreeAbsolute(fake_home) catch {};
+
+    var git = try git_mod.Git.init(allocator, fake_home);
+    defer git.deinit();
+    try cmd_repo.initCmd(allocator, git, fake_home, &.{fake_remote});
+
+    // rice i with no args: stdin is EOF in tests, so interactive mode gets empty input and returns.
+    try entry.installCmd(allocator, git, fake_home, &.{});
+
+    const leaked = try std.fs.path.join(allocator, &.{ fake_home, "should-not-download.txt" });
+    defer allocator.free(leaked);
+    try std.testing.expect(!fs.isFileAbsolute(leaked));
+}
+
+test "install: installDotfiles refuses default-repo download with no explicit source" {
+    const allocator = std.testing.allocator;
+
+    const fake_remote = try std.fmt.allocPrint(allocator, "/tmp/rice-test-guard-remote-{d}", .{fs.getMilliTimestamp()});
+    defer allocator.free(fake_remote);
+    try fs.makePath(fake_remote);
+    defer fs.deleteTreeAbsolute(fake_remote) catch {};
+
+    try discovery.execGitInDir(allocator, fake_remote, &.{ "init", "-b", "main" });
+    try discovery.execGitInDir(allocator, fake_remote, &.{ "config", "user.name", "TestUser" });
+    try discovery.execGitInDir(allocator, fake_remote, &.{ "config", "user.email", "test@example.com" });
+    {
+        const p = try std.fs.path.join(allocator, &.{ fake_remote, "dotfile" });
+        defer allocator.free(p);
+        const f = try fs.createFileAbsolute(p, .{});
+        try f.writePositionalAll(paths.getProcessIo(), "x", 0);
+        f.close(paths.getProcessIo());
+    }
+    try discovery.execGitInDir(allocator, fake_remote, &.{ "add", "dotfile" });
+    try discovery.execGitInDir(allocator, fake_remote, &.{ "commit", "-m", "init" });
+
+    const fake_home = try std.fmt.allocPrint(allocator, "/tmp/rice-test-guard-home-{d}", .{fs.getMilliTimestamp()});
+    defer allocator.free(fake_home);
+    try fs.makePath(fake_home);
+    defer fs.deleteTreeAbsolute(fake_home) catch {};
+
+    var git = try git_mod.Git.init(allocator, fake_home);
+    defer git.deinit();
+    try cmd_repo.initCmd(allocator, git, fake_home, &.{fake_remote});
+
+    try std.testing.expectError(error.NoSourceProvided, sparse.installDotfiles(allocator, git, fake_home, &.{}));
+
+    const leaked = try std.fs.path.join(allocator, &.{ fake_home, "dotfile" });
+    defer allocator.free(leaked);
+    try std.testing.expect(!fs.isFileAbsolute(leaked));
+}
+
+test "install: interactive source parser ignores blanks and comments" {
+    const allocator = std.testing.allocator;
+
+    var sources = try entry.parseMultilineSources(allocator,
+        \\
+        \\# comment
+        \\  # indented comment
+        \\
+        \\nvim
+        \\  https://github.com/user/repo/blob/main/file.txt ~/Downloads 
+        \\
+        \\--bin sharkdp/bat
+        \\
+    );
+    defer {
+        for (sources.items) |*s| s.deinit(allocator);
+        sources.deinit(allocator);
+    }
+
+    try std.testing.expectEqual(@as(usize, 3), sources.items.len);
+    try std.testing.expectEqualStrings("nvim", sources.items[0].args.items[0]);
+    try std.testing.expectEqualStrings("https://github.com/user/repo/blob/main/file.txt", sources.items[1].args.items[0]);
+    try std.testing.expectEqualStrings("~/Downloads", sources.items[1].args.items[1]);
+    try std.testing.expectEqualStrings("--bin", sources.items[2].args.items[0]);
+    try std.testing.expectEqualStrings("sharkdp/bat", sources.items[2].args.items[1]);
+}
+
+test "install: empty interactive source list does not download default repo" {
+    const allocator = std.testing.allocator;
+
+    var sources = try entry.parseMultilineSources(allocator, "\n# only comment\n\n  \n");
+    defer {
+        for (sources.items) |*s| s.deinit(allocator);
+        sources.deinit(allocator);
+    }
+    try std.testing.expectEqual(@as(usize, 0), sources.items.len);
 }

@@ -180,6 +180,7 @@ const command_help_map = std.StaticStringMap([]const u8).initComptime(.{
     .{
         "install",
         \\Usage:
+        \\  rice install
         \\  rice install <name> [--repo <url>] [-b|--branch <branch>] [--contents|-C]
         \\  rice install <source> <destination> [--repo <url>] [-b|--branch <branch>] [--contents|-C]
         \\  rice install <github-url> [destination] [--contents|-C]
@@ -187,6 +188,9 @@ const command_help_map = std.StaticStringMap([]const u8).initComptime(.{
         \\
         \\Aliases:
         \\  rice i
+        \\
+        \\With no arguments, rice install enters interactive source input: enter one source
+        \\per line, then press Ctrl+D to install. Blank lines and # comments are ignored.
         \\
         \\Options:
         \\  --bin, --bins       Install executable binary (defaults to ~/.local/bin or custom destination)
@@ -196,6 +200,7 @@ const command_help_map = std.StaticStringMap([]const u8).initComptime(.{
         \\  -i, --interactive   Select files to install via $EDITOR manifest
         \\
         \\Examples:
+        \\  rice install
         \\  rice install nvim
         \\  rice install nvim -b main
         \\  rice install --bin sharkdp/bat
@@ -206,7 +211,6 @@ const command_help_map = std.StaticStringMap([]const u8).initComptime(.{
         \\  rice install .zshrc ~/.zshrc --repo https://github.com/user/dotfiles
         \\  rice install https://github.com/user/repo/blob/main/path/file.txt ~/Downloads
         \\  rice install https://github.com/user/repo/releases/download/v1.0/font.zip ~/.local/share/fonts
-        \\  rice install https://github.com/dharmx/walls/tree/main/wave ~/Downloads
         \\  rice install --contents https://github.com/dharmx/walls/tree/main/wave ~/Downloads
     },
     .{
@@ -271,7 +275,7 @@ pub fn printCompactUsage() void {
         \\  discard, dis [path]  Discard local changes
         \\
         \\Install & Binaries:
-        \\  install, i <source>  Install dotfiles or binaries (-b)
+        \\  install, i [source]  Install files/binaries; no args for interactive mode
         \\  bin [install] <src>  Download/install release binaries
         \\
         \\Other:
@@ -307,9 +311,10 @@ pub fn printDetailedHelp() void {
         \\  discard, dis [path]    Discard local uncommitted changes in managed file(s)
         \\
         \\Install Commands:
-        \\  install, i <source> [destination] [flags]
-        \\      Selectively download and install dotfiles using sparse checkouts, or
-        \\      install release binaries with --bin.
+        \\  install, i [source] [destination] [flags]
+        \\      With no arguments, enter interactive source input (one per line, Ctrl+D to
+        \\      install). Otherwise selectively download and install dotfiles using sparse
+        \\      checkouts, or install release binaries with --bin.
         \\
         \\      Flags:
         \\        --bin, --bins       Install executable binary (defaults to ~/.local/bin or custom destination)
@@ -477,7 +482,7 @@ pub fn main(init: std.process.Init) !void {
         cmd_sync.discardCmd(allocator, git, home_dir, cmd_args) catch std.process.exit(1);
     } else if (std.mem.eql(u8, resolved_cmd, "install")) {
         install_mod.installCmd(allocator, git, home_dir, cmd_args) catch |err| {
-            if (err != error.PermissionDenied and err != error.UnknownFlag and err != error.TooManyArgs and err != error.InvalidArgs and err != error.NoRepoConfigured and err != error.GitFetchFailed and err != error.DownloadedFileIsHTML and err != error.ContentsOnlyWithDirs) {
+            if (err != error.PermissionDenied and err != error.UnknownFlag and err != error.TooManyArgs and err != error.InvalidArgs and err != error.NoRepoConfigured and err != error.NoSourceProvided and err != error.GitFetchFailed and err != error.DownloadedFileIsHTML and err != error.ContentsOnlyWithDirs) {
                 std.debug.print("Error: {s}\n", .{@errorName(err)});
             }
             std.process.exit(1);

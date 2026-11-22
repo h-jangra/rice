@@ -77,6 +77,12 @@ rice restore
 
 ### Install Files and Directories
 
+Enter interactive mode (one source per line, Ctrl+D to install):
+
+```bash
+rice install
+```
+
 Install from your configured repository:
 
 ```bash
@@ -160,7 +166,7 @@ rice restore --bins
 | `branches`               | `branch`, `br`         | List branches                           |
 | `restore [--bins]`       | `rs`                   | Restore files or binaries               |
 | `discard [path...]`      | `dis`                  | Discard local changes                   |
-| `install <source> [dst]` | `i`                    | Install files, directories, or binaries |
+| `install [source] [dst]` | `i`                    | Install files/directories/binaries; no args enters interactive mode |
 | `bin [install] <source>` |                        | Manage binaries                         |
 | `edit`                   | `e`                    | Edit `~/.rice.ini`                      |
 | `doctor`                 |                        | Check repository health                 |

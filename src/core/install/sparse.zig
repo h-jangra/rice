@@ -18,15 +18,14 @@ pub fn defaultBranch() []const u8 {
 pub fn printInstallUsage() void {
     std.debug.print(
         \\Usage:
-        \\  rice install [--repo <url>] [-b|--branch <branch>] [-f|--force]
+        \\  rice install
         \\  rice install <name> [--repo <url>] [-b|--branch <branch>] [--contents|-C]
         \\  rice install <source> <destination> [--repo <url>] [-b|--branch <branch>] [--contents|-C]
         \\  rice install <github-url> [destination] [--contents|-C]
         \\  rice install --bin <source> [destination] [--tag <tag>] [--name <name>] [--save]
         \\
         \\Examples:
-        \\  rice install --repo https://github.com/user/dotfiles -b main
-        \\  rice install --repo user/dotfiles
+        \\  rice install
         \\  rice install nvim
         \\  rice install nvim -b main
         \\  rice install --bin sharkdp/bat
@@ -37,8 +36,6 @@ pub fn printInstallUsage() void {
         \\  rice install .zshrc ~/.zshrc --repo https://github.com/user/dotfiles
         \\  rice install https://github.com/user/repo/blob/main/path/file.txt ~/Downloads
         \\  rice install https://github.com/user/repo/releases/download/v1.0/font.zip ~/.local/share/fonts
-        \\  rice install https://github.com/dharmx/walls/tree/main/wave ~/Downloads
-        \\  rice install https://github.com/user/dotfiles/tree/master/.config/foot .config/foot
         \\  rice install --contents https://github.com/dharmx/walls/tree/main/wave ~/Downloads
         \\
     , .{});
@@ -47,7 +44,7 @@ pub fn printInstallUsage() void {
 pub fn printInstallHelp() void {
     std.debug.print(
         \\Usage:
-        \\  rice install [--repo <url>] [-b|--branch <branch>] [-f|--force]
+        \\  rice install
         \\  rice install <name> [--repo <url>] [-b|--branch <branch>] [--contents|-C]
         \\  rice install <source> <destination> [--repo <url>] [-b|--branch <branch>] [--contents|-C]
         \\  rice install <github-url> [destination] [--contents|-C]
@@ -55,6 +52,9 @@ pub fn printInstallHelp() void {
         \\
         \\Aliases:
         \\  rice i
+        \\
+        \\With no arguments, rice install enters interactive source input: enter one source
+        \\per line, then press Ctrl+D to install. Blank lines and # comments are ignored.
         \\
         \\Options:
         \\  --bin, --bins       Install executable binary (defaults to ~/.local/bin or custom destination)
@@ -65,7 +65,7 @@ pub fn printInstallHelp() void {
         \\  -i, --interactive   Select files to install via $EDITOR manifest
         \\
         \\Examples:
-        \\  rice install --repo https://github.com/h-jangra/dots -b master
+        \\  rice install
         \\  rice install nvim
         \\  rice install nvim -b main
         \\  rice install --bin sharkdp/bat
@@ -76,8 +76,6 @@ pub fn printInstallHelp() void {
         \\  rice install .zshrc ~/.zshrc --repo https://github.com/user/dotfiles
         \\  rice install https://github.com/user/repo/blob/main/path/file.txt ~/Downloads
         \\  rice install https://github.com/user/repo/releases/download/v1.0/font.zip ~/.local/share/fonts
-        \\  rice install https://github.com/dharmx/walls/tree/main/wave ~/Downloads
-        \\  rice install https://github.com/h-jangra/dots/tree/master/.config/foot .config/foot
         \\  rice install --contents https://github.com/dharmx/walls/tree/main/wave ~/Downloads
         \\
     , .{});
@@ -317,6 +315,11 @@ pub fn installDotfiles(allocator: Allocator, git: *git_mod.Git, homeDir: []const
             std.debug.print("Error: no repository configured. Use:\n  rice install <name> --repo <repository>\n", .{});
         }
         return error.NoRepoConfigured;
+    }
+
+    if (positional.items.len == 0 and needs_remote_discovery == null and items.items.len == 0 and !interactive_flag and repo_flag == null and repo_url == null) {
+        std.debug.print("Error: no install source provided.\nRun 'rice i' with no arguments to enter interactive mode, or specify a source.\n", .{});
+        return error.NoSourceProvided;
     }
 
     const tmp_dir_path = try std.fmt.allocPrint(allocator, "/tmp/rice-install-{d}", .{fs.getTempId()});

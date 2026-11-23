@@ -255,13 +255,34 @@ pub fn resolveRemoteConfig(allocator: Allocator, tmpDir: []const u8, _: []const 
     var matches: std.ArrayList(DiscoveredCandidate) = .empty;
     defer matches.deinit(allocator);
 
-    for (candidates.items) |c| {
+    const orig_len = candidates.items.len;
+    var i: usize = 0;
+    while (i < orig_len) : (i += 1) {
+        const c = candidates.items[i];
         const spec = try std.fmt.allocPrint(allocator, "FETCH_HEAD:{s}", .{c.repo_path});
         defer allocator.free(spec);
         if (runGitInDirQuiet(allocator, tmpDir, &.{ "cat-file", "-e", spec }, true)) |out| {
             allocator.free(out);
             try matches.append(allocator, c);
-        } else |_| {}
+        } else |_| {
+            const prefixes = [_][]const u8{ "dots/", "dotfiles/", "home/" };
+            for (prefixes) |pfx| {
+                const prefixed = try std.fmt.allocPrint(allocator, "{s}{s}", .{ pfx, c.repo_path });
+                defer allocator.free(prefixed);
+                const spec2 = try std.fmt.allocPrint(allocator, "FETCH_HEAD:{s}", .{prefixed});
+                defer allocator.free(spec2);
+                if (runGitInDirQuiet(allocator, tmpDir, &.{ "cat-file", "-e", spec2 }, true)) |out2| {
+                    allocator.free(out2);
+                    // add to candidates so it's owned/freed properly, then add to matches
+                    try candidates.append(allocator, .{
+                        .repo_path = try allocator.dupe(u8, prefixed),
+                        .dest_config_path = try allocator.dupe(u8, c.dest_config_path),
+                    });
+                    try matches.append(allocator, candidates.items[candidates.items.len - 1]);
+                    break;
+                } else |_| {}
+            }
+        }
     }
 
     if (matches.items.len == 0) {

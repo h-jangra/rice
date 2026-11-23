@@ -160,10 +160,7 @@ pub fn normalizeConfigFileEntry(allocator: Allocator, path: []const u8) ![]u8 {
     return result;
 }
 
-pub fn loadConfig(allocator: Allocator, path: []const u8) !*Config {
-    const content = try std.Io.Dir.cwd().readFileAlloc(paths.getProcessIo(), path, allocator, .limited(10 * 1024 * 1024));
-    defer allocator.free(content);
-
+pub fn parseConfig(allocator: Allocator, content: []const u8) !*Config {
     const cfg = try allocator.create(Config);
     cfg.* = Config.init(allocator);
     errdefer {
@@ -216,6 +213,12 @@ pub fn loadConfig(allocator: Allocator, path: []const u8) !*Config {
     }
 
     return cfg;
+}
+
+pub fn loadConfig(allocator: Allocator, path: []const u8) !*Config {
+    const content = try std.Io.Dir.cwd().readFileAlloc(paths.getProcessIo(), path, allocator, .limited(10 * 1024 * 1024));
+    defer allocator.free(content);
+    return parseConfig(allocator, content);
 }
 
 pub fn loadConfigOrDefault(allocator: Allocator, path: []const u8) !*Config {

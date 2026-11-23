@@ -99,7 +99,7 @@ pub const Git = struct {
     }
 
     pub fn hasCommits(self: *const Git) bool {
-        if (self.output(&.{ "rev-parse", "--verify", "HEAD" })) |out| {
+        if (self.bareOutput(&.{ "rev-parse", "--verify", "HEAD" })) |out| {
             self.allocator.free(out);
             return true;
         } else |_| return false;

@@ -1398,7 +1398,7 @@ test "install: interactive manifest arrow rename syntax" {
     const original_files = [_][]const u8{font_rel};
 
     // User specifies source -> destination rename
-    const user_entry = [_][]const u8{"hinted/ttf/NotoSerif-Regular.ttf -> NotoSerif-Regular.ttf"};
+    const user_entry = [_][]const u8{"hinted/ttf/NotoSerif-Regular.ttf : NotoSerif-Regular.ttf"};
 
     var validated = try manifest.validateManifestPaths(allocator, &user_entry, &original_files, tmp_src);
     defer {
@@ -1429,7 +1429,7 @@ test "install: interactive manifest arrow rename with basename source shorthand"
     const original_files = [_][]const u8{font_rel};
 
     // Basename shorthand source -> renamed destination
-    const user_entry = [_][]const u8{"NotoSerif-Regular.ttf -> fonts/NotoSerif-Regular.ttf"};
+    const user_entry = [_][]const u8{"NotoSerif-Regular.ttf : fonts/NotoSerif-Regular.ttf"};
 
     var validated = try manifest.validateManifestPaths(allocator, &user_entry, &original_files, tmp_src);
     defer {

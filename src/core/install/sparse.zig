@@ -215,6 +215,21 @@ pub fn installDotfiles(allocator: Allocator, git: *git_mod.Git, homeDir: []const
         const raw_src = positional.items[0];
         const raw_dst = positional.items[1];
 
+        // Relative destinations are resolved against the current working directory,
+        // not $HOME, so `rice i <src> ewwdoc` installs into ./ewwdoc.
+        var dst_arg = raw_dst;
+        var dst_owned: ?[]u8 = null;
+        defer if (dst_owned) |d| allocator.free(d);
+        if (!(std.fs.path.isAbsolute(raw_dst) or
+            std.mem.startsWith(u8, raw_dst, "~/") or std.mem.startsWith(u8, raw_dst, "~\\") or
+            std.mem.startsWith(u8, raw_dst, "./") or std.mem.startsWith(u8, raw_dst, ".\\") or
+            std.mem.startsWith(u8, raw_dst, "../") or std.mem.startsWith(u8, raw_dst, "..\\") or
+            std.mem.eql(u8, raw_dst, ".") or std.mem.eql(u8, raw_dst, "..")))
+        {
+            dst_owned = try std.fmt.allocPrint(allocator, "./{s}", .{raw_dst});
+            dst_arg = dst_owned.?;
+        }
+
         if (paths.isURL(raw_src)) {
             if (paths.parseGitHubURL(allocator, raw_src)) |gh_info| {
                 defer {
@@ -230,7 +245,7 @@ pub fn installDotfiles(allocator: Allocator, git: *git_mod.Git, homeDir: []const
                         return error.ContentsOnlyWithDirs;
                     }
                     const item_name = if (!contents_flag) gh_info.file_name else "";
-                    const dest = try paths.resolveInstallDestination(allocator, homeDir, raw_dst, item_name, contents_flag);
+                    const dest = try paths.resolveInstallDestination(allocator, homeDir, dst_arg, item_name, contents_flag);
                     try items.append(allocator, .{
                         .repo_path = try allocator.dupe(u8, gh_info.path),
                         .config_path = dest.config_path,
@@ -247,7 +262,7 @@ pub fn installDotfiles(allocator: Allocator, git: *git_mod.Git, homeDir: []const
             const clean_src = try paths.validateSourcePath(allocator, raw_src);
             defer allocator.free(clean_src);
             const item_name = if (!contents_flag) std.fs.path.basename(clean_src) else "";
-            const dest = try paths.resolveInstallDestination(allocator, homeDir, raw_dst, item_name, contents_flag);
+            const dest = try paths.resolveInstallDestination(allocator, homeDir, dst_arg, item_name, contents_flag);
             try items.append(allocator, .{
                 .repo_path = try allocator.dupe(u8, clean_src),
                 .config_path = dest.config_path,
@@ -367,6 +382,31 @@ pub fn installDotfiles(allocator: Allocator, git: *git_mod.Git, homeDir: []const
     if (!fetch_success) {
         std.debug.print("Error: failed to fetch branch '{s}' from {s}\n", .{ branch_str, final_repo.? });
         return error.GitFetchFailed;
+    }
+
+    // Try to fix repo_path prefixes (dots/, dotfiles/, home/) for explicitly provided items
+    if (items.items.len > 0 and needs_remote_discovery == null) {
+        for (items.items) |*item| {
+            const spec = try std.fmt.allocPrint(allocator, "FETCH_HEAD:{s}", .{item.repo_path});
+            defer allocator.free(spec);
+            if (discovery.runGitInDirQuiet(allocator, tmp_dir_path, &.{ "cat-file", "-e", spec }, true)) |out| {
+                allocator.free(out);
+            } else |_| {
+                const prefixes = [_][]const u8{ "dots/", "dotfiles/", "home/" };
+                for (prefixes) |pfx| {
+                    const new_rp = try std.fmt.allocPrint(allocator, "{s}{s}", .{ pfx, item.repo_path });
+                    defer allocator.free(new_rp);
+                    const spec2 = try std.fmt.allocPrint(allocator, "FETCH_HEAD:{s}", .{new_rp});
+                    defer allocator.free(spec2);
+                    if (discovery.runGitInDirQuiet(allocator, tmp_dir_path, &.{ "cat-file", "-e", spec2 }, true)) |out2| {
+                        allocator.free(out2);
+                        allocator.free(item.repo_path);
+                        item.repo_path = try allocator.dupe(u8, new_rp);
+                        break;
+                    } else |_| {}
+                }
+            }
+        }
     }
 
     if (interactive_flag) {

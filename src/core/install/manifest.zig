@@ -77,14 +77,7 @@ pub fn generateManifestFile(allocator: Allocator, manifest_path: []const u8, fil
 
     try buf.appendSlice(allocator,
         \\# Rice install manifest
-        \\#
-        \\# Delete lines you do not want to install.
-        \\# To customize destination path / rename a file:
-        \\#   <source_path> -> <destination_path>
-        \\#   <source_path> : <destination_path>
-        \\#
-        \\# You can also edit the line to just the target filename (if unique in source):
-        \\#   NotoSerif-Regular.ttf
+        \\# Delete lines to skip. Rename/move: src : dst (use {} for src name)
         \\
         \\
     );
@@ -156,6 +149,20 @@ fn checkPathTraversal(path: []const u8) !void {
     }
 }
 
+fn checkDestTraversal(path: []const u8) !void {
+    if (path.len == 0) return error.PathTraversal;
+    var comp_it = std.mem.splitScalar(u8, path, '/');
+    while (comp_it.next()) |comp| {
+        var sub_it = std.mem.splitScalar(u8, comp, '\\');
+        while (sub_it.next()) |sub| {
+            if (std.mem.eql(u8, sub, "..")) {
+                std.debug.print("Error: invalid manifest entry '{s}': path traversal not allowed\n", .{path});
+                return error.PathTraversal;
+            }
+        }
+    }
+}
+
 fn resolveSource(
     original_paths: []const []const u8,
     orig_map: *const std.StringHashMap(void),
@@ -197,13 +204,6 @@ const SplitResult = struct {
 };
 
 fn splitManifestLine(line: []const u8, orig_map: *const std.StringHashMap(void)) SplitResult {
-    if (std.mem.indexOf(u8, line, "->")) |idx| {
-        return .{
-            .src_part = std.mem.trim(u8, line[0..idx], " \t\r\n"),
-            .dst_part = std.mem.trim(u8, line[idx + 2 ..], " \t\r\n"),
-        };
-    }
-
     if (std.mem.indexOf(u8, line, " as ")) |idx| {
         return .{
             .src_part = std.mem.trim(u8, line[0..idx], " \t\r\n"),
@@ -300,10 +300,30 @@ pub fn validateManifestPaths(
                 final_dst = try allocator.dupe(u8, path);
             }
         }
+        // Expand placeholder {} in destination to source basename
+        if (std.mem.indexOf(u8, final_dst, "{}") != null) {
+            const base = std.fs.path.basename(resolved_src);
+            var buf: std.ArrayList(u8) = .empty;
+            defer buf.deinit(allocator);
+            var i: usize = 0;
+            while (i < final_dst.len) {
+                if (i + 1 < final_dst.len and final_dst[i] == '{' and final_dst[i + 1] == '}') {
+                    try buf.appendSlice(allocator, base);
+                    i += 2;
+                } else {
+                    try buf.append(allocator, final_dst[i]);
+                    i += 1;
+                }
+            }
+            const expanded = try buf.toOwnedSlice(allocator);
+            allocator.free(final_dst);
+            final_dst = expanded;
+        }
+
         errdefer allocator.free(final_dst);
 
-        // 5. Path traversal check on destination path
-        checkPathTraversal(final_dst) catch |err| {
+        // 5. Path traversal check on destination path (allow absolute destinations)
+        checkDestTraversal(final_dst) catch |err| {
             allocator.free(final_dst);
             return err;
         };

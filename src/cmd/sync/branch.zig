@@ -88,12 +88,7 @@ pub fn switchCmd(allocator: Allocator, git: *git_mod.Git, homeDir: []const u8, a
     if (git.getHEADFileContent(".rice.ini")) |ini_bytes| {
         defer allocator.free(ini_bytes);
         if (ini_bytes.len > 0) {
-            if (fs.createFileAbsolute(ini_path, .{ .permissions = @enumFromInt(0o644) })) |f| {
-                var file = f;
-                file.writePositionalAll(paths.getProcessIo(), ini_bytes, 0) catch {};
-                file.close(paths.getProcessIo());
-            } else |_| {}
-            cfg = config.loadConfigOrDefault(allocator, ini_path) catch blk: {
+            cfg = config.parseConfig(allocator, ini_bytes) catch blk: {
                 const new_c = try allocator.create(config.Config);
                 new_c.* = config.Config.init(allocator);
                 break :blk new_c;
